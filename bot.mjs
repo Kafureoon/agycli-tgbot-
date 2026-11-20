@@ -991,7 +991,7 @@ ${diskCardsSvg}
   return outPath;
 }
 
-function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1" } = {}) {
+function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1", heatmapStats = null } = {}) {
   const W = 920;
   const padX = 40;
   const contentW = W - padX * 2; // 840
@@ -1022,8 +1022,14 @@ function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1"
     }
   }
 
-  const { hitPct: poolHitPct } = calcCacheHitPct(sumIn, sumCached);
+  const hStats = heatmapStats || collectUsageHeatmapStats();
+  const { hitPct: poolHitPct } = calcCacheHitPct(hStats.totalInput || sumIn, hStats.totalCached || sumCached);
   const poolMinStr = activeMinPct !== null ? `${activeMinPct.toFixed(1).replace(/\.0$/, "")}%` : "--";
+  const lt = cfg.lastTurnUsage || {};
+  const speedStr = lt.tokPerSec ? `${Number(lt.tokPerSec).toFixed(1)} tok/s` : `${sumTurns} 轮`;
+  const speedSub = lt.tokPerSec
+    ? `${lt.ttftMs ? `首字 ${formatDuration(lt.ttftMs)} · ` : ""}累计 ${sumTurns} 轮`
+    : `输出 ${formatTokenCount(sumOut)}`;
 
   const quotaTheme = (frac) => {
     const pct = frac * 100;
@@ -1060,7 +1066,14 @@ function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1"
     return layout;
   });
 
-  const H = Math.max(320, curY + 22);
+  // Heatmap + 7-day trend + speed/model breakdown heights
+  const heatCardY = curY + 2;
+  const heatCardH = 306;
+  const botY = heatCardY + heatCardH + 14;
+  const botGap = 14;
+  const botW = Math.floor((contentW - botGap) / 2); // 413
+  const botH = 224;
+  const H = botY + botH + 34;
 
   const svg = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
@@ -1070,14 +1083,14 @@ function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1"
     // Top Header
     `<circle cx="${padX + 8}" cy="48" r="6" fill="#c084fc"/>`,
     `<circle cx="${padX + 12}" cy="45" r="2.5" fill="#f5d0fe"/>`,
-    `<text x="${padX + 24}" y="54" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="20" font-weight="bold" fill="#f5f5f5">模型额度与算力看板</text>`,
+    `<text x="${padX + 24}" y="54" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="20" font-weight="bold" fill="#f5f5f5">模型额度与算力全景看板</text>`,
     `<text x="${W - 180}" y="53" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="13" fill="#737373">更新于 ${escapeXml(updTime)}</text>`,
     `<rect x="${W - 166}" y="34" width="126" height="28" rx="14" fill="${readyCount > 0 ? "#13291b" : "#2c1317"}" stroke="${readyCount > 0 ? "#22c55e" : "#ef4444"}" stroke-opacity="0.55" stroke-width="1"/>`,
     `<text x="${W - 103}" y="53" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" font-weight="bold" fill="${readyCount > 0 ? "#4ade80" : "#fb7185"}">${readyCount}/${entries.length} 账号在线</text>`,
     `<line x1="${padX}" y1="74" x2="${W - padX}" y2="74" stroke="#242424" stroke-width="1"/>`,
   ];
 
-  // Top 4-Card Summary Grid (antigravity-context-viewer style)
+  // Top 4-Card Summary Grid
   const kpis = [
     {
       label: "主用余量",
@@ -1087,25 +1100,25 @@ function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1"
       sub: readyCount > 0 ? `${readyCount} 个账号在线可切` : "暂无在线可用号",
     },
     {
-      label: "缓存命中",
-      tag: "Cache",
+      label: "全量 Token",
+      tag: "Total",
       tagColor: "#c084fc",
-      value: `${sumIn + sumCached > 0 ? poolHitPct.toFixed(1) : "0.0"}%`,
-      sub: `命中 ${formatTokenCount(sumCached)} Tok`,
+      value: formatTokenCount(hStats.totalTokens),
+      sub: `今日 ${formatTokenCount(hStats.todayStats.total)} · ${hStats.activeDays} 天活跃`,
     },
     {
-      label: "累计对话",
-      tag: "Turns",
+      label: "缓存命中率",
+      tag: "Cache",
       tagColor: "#4ade80",
-      value: `${sumTurns}`,
-      sub: `新输入 ${formatTokenCount(sumIn)} Tok`,
+      value: `${hStats.totalTokens > 0 || sumIn + sumCached > 0 ? poolHitPct.toFixed(1) : "0.0"}%`,
+      sub: `命中 ${formatTokenCount(hStats.totalCached || sumCached)} Tok`,
     },
     {
-      label: "累计输出",
-      tag: "Output",
+      label: lt.tokPerSec ? "生成速度" : "累计对话",
+      tag: lt.tokPerSec ? "Speed" : "Turns",
       tagColor: "#fbbf24",
-      value: formatTokenCount(sumOut),
-      sub: sumThink > 0 ? `思考 ${formatTokenCount(sumThink)} Tok` : `共 ${entries.length} 个账号`,
+      value: speedStr,
+      sub: speedSub,
     },
   ];
 
@@ -1293,6 +1306,168 @@ function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1"
     }
   }
 
+  // Append 26-week Activity Heatmap + 7-day Trend + Speed/Model Breakdown
+  const weeks = 26;
+  const cellSize = 23;
+  const cellGap = 6;
+  const gridW = weeks * cellSize + (weeks - 1) * cellGap;
+  const gridLeft = padX + Math.floor((contentW - gridW) / 2);
+  const todayBaseMs = Date.parse(`${hStats.todayStr}T12:00:00+08:00`);
+  const todayDow = new Date(todayBaseMs).getUTCDay();
+  const endOffsetDays = 6 - todayDow;
+  const totalGridDays = weeks * 7;
+  const startMs = todayBaseMs - (totalGridDays - 1 - endOffsetDays) * 86400000;
+
+  let maxDayTokens = 0;
+  const gridCells = [];
+  for (let idx = 0; idx < totalGridDays; idx++) {
+    const ms = startMs + idx * 86400000;
+    const dayStr = toShanghaiDateStr(ms);
+    const isFuture = ms > todayBaseMs + 43200000;
+    const d = isFuture ? null : hStats.daily.get(dayStr);
+    const val = d ? d.total : 0;
+    if (val > maxDayTokens) maxDayTokens = val;
+    gridCells.push({
+      col: Math.floor(idx / 7),
+      row: idx % 7,
+      dayStr,
+      val,
+      isFuture,
+      isToday: dayStr === hStats.todayStr,
+    });
+  }
+
+  const heatPalette = ["#232323", "#3b1d61", "#6d28d9", "#a855f7", "#d8b4fe"];
+  const heatColor = (val) => {
+    if (!val || maxDayTokens <= 0) return heatPalette[0];
+    const r = val / maxDayTokens;
+    if (r >= 0.75) return heatPalette[4];
+    if (r >= 0.45) return heatPalette[3];
+    if (r >= 0.2) return heatPalette[2];
+    return heatPalette[1];
+  };
+
+  const rangeStart = gridCells[0]?.dayStr || "";
+  svg.push(
+    `<rect x="${padX}" y="${heatCardY}" width="${contentW}" height="${heatCardH}" rx="12" fill="#1b1b1b" stroke="#2c2c2c" stroke-width="1"/>`,
+    `<text x="${padX + 20}" y="${heatCardY + 29}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14.5" font-weight="bold" fill="#f5f5f5">Token 活跃热力图</text>`,
+    `<rect x="${padX + 150}" y="${heatCardY + 13}" width="174" height="22" rx="6" fill="#222222" stroke="#303030"/>`,
+    `<text x="${padX + 237}" y="${heatCardY + 28}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="11.5" fill="#a3a3a3">${escapeXml(rangeStart)} ~ ${escapeXml(hStats.todayStr)}</text>`,
+    `<text x="${padX + contentW - 20}" y="${heatCardY + 29}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#8e8e93">近 26 周每日强度 (${hStats.convCount} 会话 · ${hStats.totalSteps} 请求)</text>`
+  );
+
+  const gridTop = heatCardY + 46;
+  let lastMonthLabel = "";
+  let lastMonthX = -999;
+  for (let col = 0; col < weeks; col++) {
+    const firstCell = gridCells[col * 7];
+    if (firstCell && !firstCell.isFuture) {
+      const mNum = Number(firstCell.dayStr.slice(5, 7));
+      const mLabel = `${mNum}月`;
+      const mx = gridLeft + col * (cellSize + cellGap);
+      if (mLabel !== lastMonthLabel && col < weeks - 1 && mx - lastMonthX >= 48) {
+        lastMonthLabel = mLabel;
+        lastMonthX = mx;
+        svg.push(
+          `<text x="${mx}" y="${gridTop + 7 * (cellSize + cellGap) + 15}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="11.5" fill="#737373">${mLabel}</text>`
+        );
+      }
+    }
+  }
+
+  for (const c of gridCells) {
+    const cx = gridLeft + c.col * (cellSize + cellGap);
+    const cy = gridTop + c.row * (cellSize + cellGap);
+    if (c.isFuture) {
+      svg.push(`<rect x="${cx}" y="${cy}" width="${cellSize}" height="${cellSize}" rx="5" fill="#191919" stroke="#222222" stroke-width="0.8"/>`);
+      continue;
+    }
+    const fill = heatColor(c.val);
+    const stroke = c.isToday ? "#f5f5f5" : "#2c2c2c";
+    const sw = c.isToday ? "1.6" : "0.8";
+    svg.push(`<rect x="${cx}" y="${cy}" width="${cellSize}" height="${cellSize}" rx="5" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>`);
+  }
+
+  const legY = heatCardY + heatCardH - 15;
+  svg.push(
+    `<text x="${padX + 20}" y="${legY}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#737373">统计覆盖全量历史库与共享会话 (白框为今日)</text>`,
+    `<text x="${padX + contentW - 156}" y="${legY}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#8e8e93">少</text>`
+  );
+  heatPalette.forEach((colHex, i) => {
+    const lx = padX + contentW - 144 + i * 20;
+    svg.push(`<rect x="${lx}" y="${legY - 12}" width="14" height="14" rx="3" fill="${colHex}" stroke="#303030" stroke-width="0.8"/>`);
+  });
+  svg.push(`<text x="${padX + contentW - 20}" y="${legY}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#8e8e93">多</text>`);
+
+  // Bottom Left: Last 7 days bar chart
+  const blX = padX;
+  svg.push(
+    `<rect x="${blX}" y="${botY}" width="${botW}" height="${botH}" rx="12" fill="#1b1b1b" stroke="#2c2c2c" stroke-width="1"/>`,
+    `<text x="${blX + 18}" y="${botY + 27}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" font-weight="bold" fill="#f5f5f5">近 7 日每日消耗趋势</text>`
+  );
+  const last7 = [];
+  for (let i = 6; i >= 0; i--) {
+    const ds = toShanghaiDateStr(todayBaseMs - i * 86400000);
+    const d = hStats.daily.get(ds) || { total: 0, steps: 0 };
+    last7.push({ label: ds.slice(5), total: d.total, isToday: i === 0 });
+  }
+  const max7 = Math.max(1, ...last7.map((x) => x.total));
+  last7.forEach((d, idx) => {
+    const ry = botY + 44 + idx * 24;
+    const trackX = blX + 74;
+    const trackW = botW - 166;
+    const fw = d.total > 0 ? Math.max(6, Math.round((d.total / max7) * trackW)) : 0;
+    svg.push(
+      `<text x="${blX + 18}" y="${ry + 12}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="${d.isToday ? "#38bdf8" : "#8e8e93"}">${escapeXml(d.label)}</text>`,
+      `<rect x="${trackX}" y="${ry + 3}" width="${trackW}" height="10" rx="5" fill="#262626"/>`,
+      ...(fw > 0
+        ? [`<rect x="${trackX}" y="${ry + 3}" width="${fw}" height="10" rx="5" fill="${d.isToday ? "#38bdf8" : "#a855f7"}"/>`]
+        : []),
+      `<text x="${blX + botW - 18}" y="${ry + 12}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#d4d4d8">${d.total > 0 ? formatTokenCount(d.total) : "0"}</text>`
+    );
+  });
+
+  // Bottom Right: Latest Speed & Model Share
+  const brX = padX + botW + botGap;
+  svg.push(
+    `<rect x="${brX}" y="${botY}" width="${botW}" height="${botH}" rx="12" fill="#1b1b1b" stroke="#2c2c2c" stroke-width="1"/>`,
+    `<text x="${brX + 18}" y="${botY + 27}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" font-weight="bold" fill="#f5f5f5">生成速度与模型占比</text>`
+  );
+  const speedTiles = [
+    { k: "输出速度", v: lt.tokPerSec ? `${Number(lt.tokPerSec).toFixed(1)} tok/s` : "--" },
+    { k: "首字延迟", v: lt.ttftMs ? formatDuration(lt.ttftMs) : "--" },
+    { k: "总耗时", v: lt.elapsedMs ? formatDuration(lt.elapsedMs) : "--" },
+  ];
+  const stW = Math.floor((botW - 36 - 16) / 3);
+  speedTiles.forEach((s, idx) => {
+    const sx = brX + 18 + idx * (stW + 8);
+    const sy = botY + 42;
+    svg.push(
+      `<rect x="${sx}" y="${sy}" width="${stW}" height="54" rx="8" fill="#222222" stroke="#2e2e2e"/>`,
+      `<text x="${sx + stW / 2}" y="${sy + 19}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="11.5" fill="#8e8e93">${s.k}</text>`,
+      `<text x="${sx + stW / 2}" y="${sy + 42}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="15.5" font-weight="bold" fill="#f5f5f5">${escapeXml(s.v)}</text>`
+    );
+  });
+
+  const topModels = hStats.byModel.slice(0, 3);
+  const modBaseY = botY + 114;
+  if (topModels.length === 0) {
+    svg.push(`<text x="${brX + 18}" y="${modBaseY + 20}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" fill="#737373">暂无模型分布记录</text>`);
+  } else {
+    topModels.forEach((m, idx) => {
+      const my = modBaseY + idx * 32;
+      const pct = hStats.totalTokens > 0 ? ((m.total / hStats.totalTokens) * 100).toFixed(1) : "0.0";
+      const barMax = botW - 36;
+      const fw = Math.max(6, Math.round((m.total / Math.max(1, hStats.totalTokens)) * barMax));
+      svg.push(
+        `<text x="${brX + 18}" y="${my + 12}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#d4d4d8">${escapeXml(trimMiddle(m.model, 28))}</text>`,
+        `<text x="${brX + botW - 18}" y="${my + 12}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#a3a3a3">${formatTokenCount(m.total)} (${pct}%)</text>`,
+        `<rect x="${brX + 18}" y="${my + 18}" width="${barMax}" height="5" rx="2.5" fill="#262626"/>`,
+        `<rect x="${brX + 18}" y="${my + 18}" width="${fw}" height="5" rx="2.5" fill="${idx === 0 ? "#4ade80" : idx === 1 ? "#38bdf8" : "#c084fc"}"/>`
+      );
+    });
+  }
+
   svg.push(`</svg>`);
 
   const resvg = new Resvg(svg.join("\n"), {
@@ -1437,267 +1612,6 @@ function collectUsageHeatmapStats() {
     week7Total,
     month30Total,
   };
-}
-
-function renderHeatmapCardPng(stats, updTime = "") {
-  const W = 920;
-  const padX = 40;
-  const contentW = W - padX * 2; // 840
-  const kpiGap = 12;
-  const kpiW = Math.floor((contentW - kpiGap * 3) / 4); // 201
-  const kpiY = 92;
-  const kpiH = 96;
-
-  const { hitPct: allHitPct } = calcCacheHitPct(stats.totalInput, stats.totalCached);
-  const lt = cfg.lastTurnUsage || {};
-  const speedStr = lt.tokPerSec ? `${Number(lt.tokPerSec).toFixed(1)} tok/s` : "--";
-  const ttftStr = lt.ttftMs ? `首字 ${formatDuration(lt.ttftMs)}` : "暂无速度样本";
-
-  // 26-week (182-day) heatmap grid ending at today's week
-  const weeks = 26;
-  const cellSize = 24;
-  const cellGap = 6;
-  const gridW = weeks * cellSize + (weeks - 1) * cellGap; // 26*24 + 25*6 = 774
-  const gridLeft = padX + Math.floor((contentW - gridW) / 2);
-  const heatCardY = kpiY + kpiH + 18;
-  const heatCardH = 314;
-
-  // Build calendar cells aligned to Sunday..Saturday (0..6) in Asia/Shanghai
-  const todayBaseMs = Date.parse(`${stats.todayStr}T12:00:00+08:00`);
-  const todayDow = new Date(todayBaseMs).getUTCDay(); // close enough for +08 noon -> UTC is +04:00 same day!
-  const endOffsetDays = 6 - todayDow;
-  const totalGridDays = weeks * 7;
-  const startMs = todayBaseMs - (totalGridDays - 1 - endOffsetDays) * 86400000;
-
-  let maxDayTokens = 0;
-  const gridCells = [];
-  for (let idx = 0; idx < totalGridDays; idx++) {
-    const ms = startMs + idx * 86400000;
-    const dayStr = toShanghaiDateStr(ms);
-    const isFuture = ms > todayBaseMs + 43200000;
-    const d = isFuture ? null : stats.daily.get(dayStr);
-    const val = d ? d.total : 0;
-    if (val > maxDayTokens) maxDayTokens = val;
-    gridCells.push({
-      col: Math.floor(idx / 7),
-      row: idx % 7,
-      dayStr,
-      val,
-      isFuture,
-      isToday: dayStr === stats.todayStr,
-    });
-  }
-
-  const heatPalette = ["#232323", "#3b1d61", "#6d28d9", "#a855f7", "#d8b4fe"];
-  const heatColor = (val) => {
-    if (!val || maxDayTokens <= 0) return heatPalette[0];
-    const r = val / maxDayTokens;
-    if (r >= 0.75) return heatPalette[4];
-    if (r >= 0.45) return heatPalette[3];
-    if (r >= 0.2) return heatPalette[2];
-    return heatPalette[1];
-  };
-
-  // Bottom 2 cards: Last 7 days bar trend (left) + Speed & Model breakdown (right)
-  const botY = heatCardY + heatCardH + 16;
-  const botGap = 14;
-  const botW = Math.floor((contentW - botGap) / 2); // 413
-  const botH = 228;
-  const H = botY + botH + 34;
-
-  const svg = [
-    `<?xml version="1.0" encoding="UTF-8"?>`,
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`,
-    `<rect width="${W}" height="${H}" rx="18" fill="#111111"/>`,
-    `<rect x="16" y="16" width="${W - 32}" height="${H - 32}" rx="14" fill="#161616" stroke="#2a2a2a" stroke-width="1"/>`,
-    // Header
-    `<circle cx="${padX + 8}" cy="48" r="6" fill="#a855f7"/>`,
-    `<circle cx="${padX + 11}" cy="45" r="2.5" fill="#f3e8ff"/>`,
-    `<text x="${padX + 24}" y="54" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="20" font-weight="bold" fill="#f5f5f5">Token 用量与活跃热力图</text>`,
-    `<text x="${W - 180}" y="53" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="13" fill="#737373">更新于 ${escapeXml(updTime)}</text>`,
-    `<rect x="${W - 166}" y="34" width="126" height="28" rx="14" fill="#231833" stroke="#a855f7" stroke-opacity="0.55" stroke-width="1"/>`,
-    `<text x="${W - 103}" y="53" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" font-weight="bold" fill="#d8b4fe">${stats.activeDays} 天活跃记录</text>`,
-    `<line x1="${padX}" y1="74" x2="${W - padX}" y2="74" stroke="#242424" stroke-width="1"/>`,
-  ];
-
-  // Top 4 KPI Tiles
-  const kpis = [
-    {
-      label: "全量累计",
-      tag: "Total",
-      tagColor: "#c084fc",
-      value: formatTokenCount(stats.totalTokens),
-      sub: `${stats.convCount} 会话 · ${stats.totalSteps} 次请求`,
-    },
-    {
-      label: "今日使用",
-      tag: "Today",
-      tagColor: "#38bdf8",
-      value: formatTokenCount(stats.todayStats.total),
-      sub: `今日 ${stats.todayStats.steps} 次 · 输出 ${formatTokenCount(stats.todayStats.output)}`,
-    },
-    {
-      label: "近 7 日合计",
-      tag: "7 Days",
-      tagColor: "#4ade80",
-      value: formatTokenCount(stats.week7Total),
-      sub: `缓存总命中 ${allHitPct.toFixed(1)}%`,
-    },
-    {
-      label: "最近生成速度",
-      tag: "Speed",
-      tagColor: "#fbbf24",
-      value: speedStr,
-      sub: ttftStr,
-    },
-  ];
-  kpis.forEach((k, idx) => {
-    const kx = padX + idx * (kpiW + kpiGap);
-    svg.push(
-      `<rect x="${kx}" y="${kpiY}" width="${kpiW}" height="${kpiH}" rx="11" fill="#1b1b1b" stroke="#2c2c2c" stroke-width="1"/>`,
-      `<text x="${kx + 16}" y="${kpiY + 24}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" fill="#8e8e93">${escapeXml(k.label)}</text>`,
-      `<text x="${kx + kpiW - 16}" y="${kpiY + 24}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" font-weight="bold" fill="${k.tagColor}">${escapeXml(k.tag)}</text>`,
-      `<text x="${kx + 16}" y="${kpiY + 58}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="24" font-weight="bold" fill="#f5f5f5">${escapeXml(k.value)}</text>`,
-      `<text x="${kx + 16}" y="${kpiY + 80}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#737373">${escapeXml(k.sub)}</text>`
-    );
-  });
-
-  // 26-week Heatmap Card
-  const rangeStart = gridCells[0]?.dayStr || "";
-  svg.push(
-    `<rect x="${padX}" y="${heatCardY}" width="${contentW}" height="${heatCardH}" rx="12" fill="#1b1b1b" stroke="#2c2c2c" stroke-width="1"/>`,
-    `<text x="${padX + 20}" y="${heatCardY + 30}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="15" font-weight="bold" fill="#f5f5f5">Token 活跃热力图</text>`,
-    `<rect x="${padX + 154}" y="${heatCardY + 14}" width="176" height="22" rx="6" fill="#222222" stroke="#303030"/>`,
-    `<text x="${padX + 242}" y="${heatCardY + 29}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="11.5" fill="#a3a3a3">${escapeXml(rangeStart)} ~ ${escapeXml(stats.todayStr)}</text>`,
-    `<text x="${padX + contentW - 20}" y="${heatCardY + 30}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#8e8e93">近 26 周每日强度</text>`
-  );
-
-  const gridTop = heatCardY + 50;
-  let lastMonthLabel = "";
-  let lastMonthX = -999;
-  for (let col = 0; col < weeks; col++) {
-    const firstCell = gridCells[col * 7];
-    if (firstCell && !firstCell.isFuture) {
-      const mNum = Number(firstCell.dayStr.slice(5, 7));
-      const mLabel = `${mNum}月`;
-      const mx = gridLeft + col * (cellSize + cellGap);
-      if (mLabel !== lastMonthLabel && col < weeks - 1 && mx - lastMonthX >= 48) {
-        lastMonthLabel = mLabel;
-        lastMonthX = mx;
-        svg.push(
-          `<text x="${mx}" y="${gridTop + 7 * (cellSize + cellGap) + 16}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="11.5" fill="#737373">${mLabel}</text>`
-        );
-      }
-    }
-  }
-
-  for (const c of gridCells) {
-    const cx = gridLeft + c.col * (cellSize + cellGap);
-    const cy = gridTop + c.row * (cellSize + cellGap);
-    if (c.isFuture) {
-      svg.push(`<rect x="${cx}" y="${cy}" width="${cellSize}" height="${cellSize}" rx="5" fill="#191919" stroke="#222222" stroke-width="0.8"/>`);
-      continue;
-    }
-    const fill = heatColor(c.val);
-    const stroke = c.isToday ? "#f5f5f5" : "#2c2c2c";
-    const sw = c.isToday ? "1.6" : "0.8";
-    svg.push(`<rect x="${cx}" y="${cy}" width="${cellSize}" height="${cellSize}" rx="5" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>`);
-  }
-
-  // Heatmap Legend
-  const legY = heatCardY + heatCardH - 22;
-  svg.push(
-    `<text x="${padX + 20}" y="${legY}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#737373">统计范围覆盖全部隔离历史库与共享会话 (白框为今日)</text>`,
-    `<text x="${padX + contentW - 156}" y="${legY}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#8e8e93">少</text>`
-  );
-  heatPalette.forEach((colHex, i) => {
-    const lx = padX + contentW - 144 + i * 20;
-    svg.push(`<rect x="${lx}" y="${legY - 12}" width="14" height="14" rx="3" fill="${colHex}" stroke="#303030" stroke-width="0.8"/>`);
-  });
-  svg.push(`<text x="${padX + contentW - 20}" y="${legY}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#8e8e93">多</text>`);
-
-  // Bottom Left Card: Last 7 Days Breakdown
-  const blX = padX;
-  svg.push(
-    `<rect x="${blX}" y="${botY}" width="${botW}" height="${botH}" rx="12" fill="#1b1b1b" stroke="#2c2c2c" stroke-width="1"/>`,
-    `<text x="${blX + 18}" y="${botY + 28}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14.5" font-weight="bold" fill="#f5f5f5">近 7 日每日消耗趋势</text>`
-  );
-  const last7 = [];
-  for (let i = 6; i >= 0; i--) {
-    const ds = toShanghaiDateStr(todayBaseMs - i * 86400000);
-    const d = stats.daily.get(ds) || { total: 0, steps: 0 };
-    last7.push({ label: ds.slice(5), total: d.total, isToday: i === 0 });
-  }
-  const max7 = Math.max(1, ...last7.map((x) => x.total));
-  last7.forEach((d, idx) => {
-    const ry = botY + 46 + idx * 24;
-    const trackX = blX + 74;
-    const trackW = botW - 166;
-    const fw = d.total > 0 ? Math.max(6, Math.round((d.total / max7) * trackW)) : 0;
-    svg.push(
-      `<text x="${blX + 18}" y="${ry + 12}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="${d.isToday ? "#38bdf8" : "#8e8e93"}">${escapeXml(d.label)}</text>`,
-      `<rect x="${trackX}" y="${ry + 3}" width="${trackW}" height="10" rx="5" fill="#262626"/>`,
-      ...(fw > 0
-        ? [`<rect x="${trackX}" y="${ry + 3}" width="${fw}" height="10" rx="5" fill="${d.isToday ? "#38bdf8" : "#a855f7"}"/>`]
-        : []),
-      `<text x="${blX + botW - 18}" y="${ry + 12}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#d4d4d8">${d.total > 0 ? formatTokenCount(d.total) : "0"}</text>`
-    );
-  });
-
-  // Bottom Right Card: Latest Generation Speed + Model Breakdown
-  const brX = padX + botW + botGap;
-  svg.push(
-    `<rect x="${brX}" y="${botY}" width="${botW}" height="${botH}" rx="12" fill="#1b1b1b" stroke="#2c2c2c" stroke-width="1"/>`,
-    `<text x="${brX + 18}" y="${botY + 28}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14.5" font-weight="bold" fill="#f5f5f5">生成速度与模型占比</text>`
-  );
-  const speedTiles = [
-    { k: "输出速度", v: speedStr },
-    { k: "首字延迟", v: lt.ttftMs ? formatDuration(lt.ttftMs) : "--" },
-    { k: "总耗时", v: lt.elapsedMs ? formatDuration(lt.elapsedMs) : "--" },
-  ];
-  const stW = Math.floor((botW - 36 - 16) / 3);
-  speedTiles.forEach((s, idx) => {
-    const sx = brX + 18 + idx * (stW + 8);
-    const sy = botY + 44;
-    svg.push(
-      `<rect x="${sx}" y="${sy}" width="${stW}" height="56" rx="8" fill="#222222" stroke="#2e2e2e"/>`,
-      `<text x="${sx + stW / 2}" y="${sy + 20}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="11.5" fill="#8e8e93">${s.k}</text>`,
-      `<text x="${sx + stW / 2}" y="${sy + 44}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="16" font-weight="bold" fill="#f5f5f5">${escapeXml(s.v)}</text>`
-    );
-  });
-
-  const topModels = stats.byModel.slice(0, 3);
-  const modBaseY = botY + 118;
-  if (topModels.length === 0) {
-    svg.push(`<text x="${brX + 18}" y="${modBaseY + 20}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" fill="#737373">暂无模型分布记录</text>`);
-  } else {
-    topModels.forEach((m, idx) => {
-      const my = modBaseY + idx * 32;
-      const pct = stats.totalTokens > 0 ? ((m.total / stats.totalTokens) * 100).toFixed(1) : "0.0";
-      const barMax = botW - 36;
-      const fw = Math.max(6, Math.round((m.total / Math.max(1, stats.totalTokens)) * barMax));
-      svg.push(
-        `<text x="${brX + 18}" y="${my + 12}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#d4d4d8">${escapeXml(trimMiddle(m.model, 28))}</text>`,
-        `<text x="${brX + botW - 18}" y="${my + 12}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#a3a3a3">${formatTokenCount(m.total)} (${pct}%)</text>`,
-        `<rect x="${brX + 18}" y="${my + 18}" width="${barMax}" height="5" rx="2.5" fill="#262626"/>`,
-        `<rect x="${brX + 18}" y="${my + 18}" width="${fw}" height="5" rx="2.5" fill="${idx === 0 ? "#4ade80" : idx === 1 ? "#38bdf8" : "#c084fc"}"/>`
-      );
-    });
-  }
-
-  svg.push(`</svg>`);
-
-  const resvg = new Resvg(svg.join("\n"), {
-    font: {
-      fontFiles: fs.existsSync(WQY_FONT_PATH) ? [WQY_FONT_PATH] : [],
-      loadSystemFonts: true,
-      defaultFontFamily: "WenQuanYi Zen Hei",
-    },
-    fitTo: { mode: "width", value: W },
-  });
-  const outPath = path.join(STATUS_IMG_DIR, `heatmap_${Date.now()}.png`);
-  fs.writeFileSync(outPath, resvg.render().asPng());
-  return outPath;
 }
 
 function stripMdCellText(text = "") {
@@ -3106,9 +3020,8 @@ async function registerBotCommands() {
   const commands = [
     { command: "status", description: "服务器状态、账号与代理节点卡片" },
     { command: "account", description: "查看与切换 Google 账号池（含模型额度）" },
-    { command: "quota", description: "查看各账号模型剩余额度与重置时间（5h/周限）" },
+    { command: "quota", description: "模型额度（5h/周限）、Token 热力图与生成速度看板" },
     { command: "cache", description: "查看提示词缓存命中率、上下文大小与 Token 明细" },
-    { command: "heatmap", description: "查看 Token 活跃热力图、每日趋势与生成速度" },
     { command: "login", description: "登录或添加账号 (/login [名称])" },
     { command: "logout", description: "注销指定账号登录态" },
     { command: "model", description: "查看与切换 agy 模型" },
@@ -3409,6 +3322,7 @@ async function sendQuotaPanel(chatId, targetArg = "", editTarget = null, { force
   }
 
   const results = await fetchAllProfileQuotas(targets, { forceRefresh });
+  const heatmapStats = collectUsageHeatmapStats();
   const now = Date.now();
   const entries = targets.map((name, idx) => {
     const meta = cfg.profiles?.[name] || {};
@@ -3433,14 +3347,14 @@ async function sendQuotaPanel(chatId, targetArg = "", editTarget = null, { force
   const keyboard = {
     inline_keyboard: [
       [
-        { text: "🔄 刷新额度", callback_data: makeCb("quota_refresh", filterName) },
-        { text: "🔥 活跃热力图", callback_data: makeCb("quota_heatmap", {}) },
+        { text: "🔄 刷新看板", callback_data: makeCb("quota_refresh", filterName) },
         { text: "👤 账号面板", callback_data: makeCb("quota_acc", {}) },
+        { text: "🧠 缓存明细", callback_data: makeCb("quota_cache", {}) },
       ],
     ],
   };
 
-  const captionParts = [`📊 模型额度看板 (${updTime})`];
+  const captionParts = [`📊 算力与用量全景 (${updTime})`];
   const actEntry = entries.find((e) => e.isAct) || entries[0];
   if (actEntry?.q?.buckets?.length > 0) {
     const brief = actEntry.q.buckets
@@ -3455,6 +3369,7 @@ async function sendQuotaPanel(chatId, targetArg = "", editTarget = null, { force
       entries,
       updTime,
       activeProfile: cfg.activeProfile || "acc1",
+      heatmapStats,
     });
     if (editIsMedia && editMsgId) {
       await editPhoto(chatId, editMsgId, imgPath, caption, keyboard);
@@ -3621,8 +3536,7 @@ async function sendCachePanel(chatId, targetArg = "", editMsgId = null) {
   }
   keyboard.push([
     { text: "🔄 刷新缓存", callback_data: makeCb("cache_view", viewProf) },
-    { text: "🔥 活跃热力图", callback_data: makeCb("cache_heatmap", {}) },
-    { text: "📊 账号额度", callback_data: makeCb("cache_quota", {}) },
+    { text: "📊 额度与热力图", callback_data: makeCb("cache_quota", {}) },
   ]);
 
   const text = lines.join("\n").slice(0, 4000);
@@ -3635,62 +3549,6 @@ async function sendCachePanel(chatId, targetArg = "", editMsgId = null) {
     }).catch(() => {});
   } else {
     await sendText(chatId, text, { reply_markup: { inline_keyboard: keyboard } });
-  }
-}
-
-async function sendHeatmapPanel(chatId, editTarget = null) {
-  const editMsgId = typeof editTarget === "object" && editTarget !== null ? editTarget.messageId : editTarget;
-  const editIsMedia = Boolean(typeof editTarget === "object" && editTarget !== null && editTarget.isMedia);
-  let waitMsgId = null;
-  if (!editMsgId) {
-    const waitMsg = await sendText(chatId, "⏳ 正在聚合历史会话并渲染活跃热力图...");
-    waitMsgId = waitMsg.message_id;
-  }
-
-  const stats = collectUsageHeatmapStats();
-  const updTime = formatShortTime(Date.now());
-  const keyboard = {
-    inline_keyboard: [
-      [
-        { text: "🔄 刷新热力图", callback_data: makeCb("heatmap_refresh", {}) },
-        { text: "📊 额度看板", callback_data: makeCb("heatmap_quota", {}) },
-        { text: "🧠 缓存明细", callback_data: makeCb("heatmap_cache", {}) },
-      ],
-    ],
-  };
-  const { hitPct } = calcCacheHitPct(stats.totalInput, stats.totalCached);
-  const caption = `🔥 Token 活跃热力图 (${updTime}) · 累计 ${formatTokenCount(stats.totalTokens)} · 今日 ${formatTokenCount(stats.todayStats.total)} · 缓存命中 ${hitPct.toFixed(1)}%`;
-
-  try {
-    const imgPath = renderHeatmapCardPng(stats, updTime);
-    if (editIsMedia && editMsgId) {
-      await editPhoto(chatId, editMsgId, imgPath, caption, keyboard);
-      return;
-    }
-    await sendPhoto(chatId, imgPath, caption, keyboard);
-    if (waitMsgId) {
-      await tg("deleteMessage", { chat_id: chatId, message_id: waitMsgId }).catch(() => {});
-    }
-    return;
-  } catch (e) {
-    console.error("heatmap png err:", e.message);
-  }
-
-  const fallbackText = [
-    `🔥 Token 用量统计 (${updTime})`,
-    `• 全量累计: ${formatTokenCount(stats.totalTokens)} (${stats.convCount} 会话 / ${stats.totalSteps} 次请求)`,
-    `• 今日使用: ${formatTokenCount(stats.todayStats.total)} (${stats.todayStats.steps} 次)`,
-    `• 近 7 日: ${formatTokenCount(stats.week7Total)} · 缓存总命中: ${hitPct.toFixed(1)}%`,
-  ].join("\n");
-  if (waitMsgId) {
-    await tg("editMessageText", {
-      chat_id: chatId,
-      message_id: waitMsgId,
-      text: fallbackText,
-      reply_markup: keyboard,
-    }).catch(() => {});
-  } else {
-    await sendText(chatId, fallbackText, { reply_markup: keyboard });
   }
 }
 
@@ -3824,9 +3682,8 @@ async function handleCommand(msg, cmd, argText) {
         "",
         "👤 账号与多号接力：",
         "/account — 查看账号池、模型额度与切换账号",
-        "/quota [账号] — 查看模型剩余额度与重置倒计时（5h/周限）",
+        "/quota [账号] — 模型额度（5h/周限）、Token 热力图与速度看板",
         "/cache [账号] — 查看提示词缓存命中率、上下文与 Token 明细",
-        "/heatmap — 查看 Token 活跃热力图、每日趋势与生成速度",
         "/login [名称] — 在 TG 内交互登录新号 (如 /login acc2)",
         "/logout [名称] — 清除账号登录态",
         "",
@@ -3946,7 +3803,7 @@ async function handleCommand(msg, cmd, argText) {
     return sendAccountPanel(chatId, null, { forceRefresh: force });
   }
 
-  if (cmd === "quota" || cmd === "usage") {
+  if (cmd === "quota" || cmd === "usage" || cmd === "heatmap" || cmd === "chart") {
     const tokens = argText.trim().split(/\s+/).filter(Boolean);
     const force = tokens.includes("refresh");
     const target = tokens.filter((t) => t !== "refresh").join(" ");
@@ -3955,10 +3812,6 @@ async function handleCommand(msg, cmd, argText) {
 
   if (cmd === "cache" || cmd === "stats") {
     return sendCachePanel(chatId, argText.trim());
-  }
-
-  if (cmd === "heatmap" || cmd === "chart") {
-    return sendHeatmapPanel(chatId);
   }
 
   if (cmd === "login") {
@@ -4320,16 +4173,7 @@ async function handleCallback(cb) {
     } else if (type === "quota_acc") {
       await tg("answerCallbackQuery", { callback_query_id: cb.id });
       await sendAccountPanel(chatId, cb.message?.photo ? null : cb.message.message_id, { forceRefresh: false });
-    } else if (type === "quota_heatmap" || type === "cache_heatmap") {
-      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "正在渲染 Token 热力图..." });
-      await sendHeatmapPanel(chatId, null);
-    } else if (type === "heatmap_refresh") {
-      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "正在刷新热力图..." });
-      await sendHeatmapPanel(chatId, { messageId: cb.message.message_id, isMedia: Boolean(cb.message?.photo) });
-    } else if (type === "heatmap_quota") {
-      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "正在渲染额度看板..." });
-      await sendQuotaPanel(chatId, "", null, { forceRefresh: false });
-    } else if (type === "heatmap_cache") {
+    } else if (type === "quota_cache") {
       await tg("answerCallbackQuery", { callback_query_id: cb.id });
       await sendCachePanel(chatId, "", cb.message?.photo ? null : cb.message.message_id);
     } else if (type === "cache_view") {

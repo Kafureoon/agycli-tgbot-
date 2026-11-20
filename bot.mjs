@@ -992,13 +992,13 @@ ${diskCardsSvg}
 }
 
 function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1" } = {}) {
-  const W = 1040;
+  const W = 920;
   const padX = 40;
-  const contentW = W - padX * 2; // 960
-  const kpiGap = 18;
-  const kpiW = Math.floor((contentW - kpiGap * 2) / 3); // 308
-  const kpiY = 122;
-  const kpiH = 92;
+  const contentW = W - padX * 2; // 840
+  const kpiGap = 12;
+  const kpiW = Math.floor((contentW - kpiGap * 3) / 4); // 201
+  const kpiY = 92;
+  const kpiH = 96;
 
   let readyCount = 0;
   let sumTurns = 0;
@@ -1024,257 +1024,251 @@ function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1"
 
   const { hitPct: poolHitPct } = calcCacheHitPct(sumIn, sumCached);
   const poolMinStr = activeMinPct !== null ? `${activeMinPct.toFixed(1).replace(/\.0$/, "")}%` : "--";
-  const poolMinColor =
-    activeMinPct === null ? "#94a3b8" : activeMinPct >= 50 ? "#34d399" : activeMinPct >= 20 ? "#fbbf24" : "#fb7185";
 
   const quotaTheme = (frac) => {
     const pct = frac * 100;
-    if (pct >= 50) return { text: "#34d399", grad: "url(#qGradGreen)", glow: "#10b981" };
-    if (pct >= 20) return { text: "#fbbf24", grad: "url(#qGradAmber)", glow: "#f59e0b" };
-    return { text: "#fb7185", grad: "url(#qGradRose)", glow: "#f43f5e" };
+    if (pct >= 70) return { accent: "#4ade80", text: "#f5f5f5", ring: "#4ade80" };
+    if (pct >= 35) return { accent: "#38bdf8", text: "#f5f5f5", ring: "#38bdf8" };
+    if (pct >= 15) return { accent: "#fbbf24", text: "#fde68a", ring: "#fbbf24" };
+    return { accent: "#fb7185", text: "#fecdd3", ring: "#fb7185" };
   };
 
   // Pre-calculate account card heights
-  const subGap = 14;
-  const subH = 84;
-  const cardGap = 18;
-  const cardsStartY = kpiY + kpiH + 22;
+  const subGap = 12;
+  const subH = 104;
+  const cardGap = 14;
+  const cardsStartY = kpiY + kpiH + 18;
   let curY = cardsStartY;
+
   const cardLayouts = entries.map((e) => {
     const q = e.q || {};
     const buckets = Array.isArray(q.buckets) ? q.buckets : [];
-    const headerH = 58;
-    let bodyH = 56; // banner fallback
+    const headerH = 52;
+    const cols = buckets.length >= 3 ? 3 : Math.max(1, buckets.length);
+    let bodyH = 52;
     if (q.loggedIn && !q.error && buckets.length > 0) {
-      const rows = Math.ceil(buckets.length / 2);
+      const rows = Math.ceil(buckets.length / cols);
       bodyH = rows * subH + (rows - 1) * subGap;
     }
     const st = e.meta?.usageStats;
     const hasStats = Boolean(st && (st.input || st.output || st.cached));
     const hasCredits = Array.isArray(q.availableCredits) && q.availableCredits.length > 0;
-    const footerH = hasStats || hasCredits ? 42 : 12;
-    const totalH = headerH + bodyH + footerH + 14;
-    const layout = { entry: e, y: curY, h: totalH, headerH, bodyH, footerH, hasStats, hasCredits };
+    const footerH = hasStats || hasCredits ? 34 : 10;
+    const totalH = headerH + bodyH + footerH + 16;
+    const layout = { entry: e, y: curY, h: totalH, headerH, bodyH, cols, hasStats, hasCredits };
     curY += totalH + cardGap;
     return layout;
   });
 
-  const H = Math.max(360, curY + 26);
+  const H = Math.max(320, curY + 22);
 
   const svg = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`,
-    `<defs>`,
-    `  <radialGradient id="qGlowA" cx="15%" cy="8%" r="55%">`,
-    `    <stop offset="0%" stop-color="#312e81" stop-opacity="0.34"/>`,
-    `    <stop offset="100%" stop-color="#06080f" stop-opacity="0"/>`,
-    `  </radialGradient>`,
-    `  <radialGradient id="qGlowB" cx="88%" cy="12%" r="48%">`,
-    `    <stop offset="0%" stop-color="#0e7490" stop-opacity="0.22"/>`,
-    `    <stop offset="100%" stop-color="#06080f" stop-opacity="0"/>`,
-    `  </radialGradient>`,
-    `  <linearGradient id="qGradGreen" x1="0%" y1="0%" x2="100%" y2="0%">`,
-    `    <stop offset="0%" stop-color="#059669"/>`,
-    `    <stop offset="100%" stop-color="#34d399"/>`,
-    `  </linearGradient>`,
-    `  <linearGradient id="qGradAmber" x1="0%" y1="0%" x2="100%" y2="0%">`,
-    `    <stop offset="0%" stop-color="#d97706"/>`,
-    `    <stop offset="100%" stop-color="#fbbf24"/>`,
-    `  </linearGradient>`,
-    `  <linearGradient id="qGradRose" x1="0%" y1="0%" x2="100%" y2="0%">`,
-    `    <stop offset="0%" stop-color="#e11d48"/>`,
-    `    <stop offset="100%" stop-color="#fb7185"/>`,
-    `  </linearGradient>`,
-    `  <linearGradient id="qTopEdge" x1="0%" y1="0%" x2="100%" y2="0%">`,
-    `    <stop offset="0%" stop-color="#ffffff" stop-opacity="0.03"/>`,
-    `    <stop offset="50%" stop-color="#ffffff" stop-opacity="0.16"/>`,
-    `    <stop offset="100%" stop-color="#ffffff" stop-opacity="0.03"/>`,
-    `  </linearGradient>`,
-    `</defs>`,
-    `<rect width="${W}" height="${H}" rx="20" fill="#06080f"/>`,
-    `<rect width="${W}" height="${H}" rx="20" fill="url(#qGlowA)"/>`,
-    `<rect width="${W}" height="${H}" rx="20" fill="url(#qGlowB)"/>`,
-    `<rect x="16" y="16" width="${W - 32}" height="${H - 32}" rx="16" fill="#0b101d" fill-opacity="0.88" stroke="#1e293b" stroke-width="1.2"/>`,
-    `<line x1="48" y1="16.5" x2="${W - 48}" y2="16.5" stroke="url(#qTopEdge)" stroke-width="1.2"/>`,
-    // Header
-    `<text x="${padX}" y="64" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="25" font-weight="bold" fill="#f8fafc">Antigravity · 模型额度与算力看板</text>`,
-    `<text x="${padX}" y="94" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" fill="#94a3b8">更新时间 ${escapeXml(updTime)} · 共 ${entries.length} 个账号 · 当前主用 ${escapeXml(activeProfile)}</text>`,
-    `<rect x="${W - 216}" y="44" width="176" height="36" rx="18" fill="${readyCount > 0 ? "#09251e" : "#2a1218"}" stroke="${readyCount > 0 ? "#10b981" : "#f43f5e"}" stroke-width="1.2"/>`,
-    `<circle cx="${W - 192}" cy="62" r="4.5" fill="${readyCount > 0 ? "#34d399" : "#fb7185"}"/>`,
-    `<text x="${W - 118}" y="67" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" font-weight="bold" fill="${readyCount > 0 ? "#34d399" : "#fb7185"}">${readyCount}/${entries.length} 账号就绪</text>`,
+    `<rect width="${W}" height="${H}" rx="18" fill="#111111"/>`,
+    `<rect x="16" y="16" width="${W - 32}" height="${H - 32}" rx="14" fill="#161616" stroke="#2a2a2a" stroke-width="1"/>`,
+    // Top Header
+    `<circle cx="${padX + 8}" cy="48" r="6" fill="#c084fc"/>`,
+    `<circle cx="${padX + 12}" cy="45" r="2.5" fill="#f5d0fe"/>`,
+    `<text x="${padX + 24}" y="54" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="20" font-weight="bold" fill="#f5f5f5">模型额度与算力看板</text>`,
+    `<text x="${W - 180}" y="53" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="13" fill="#737373">更新于 ${escapeXml(updTime)}</text>`,
+    `<rect x="${W - 166}" y="34" width="126" height="28" rx="14" fill="${readyCount > 0 ? "#13291b" : "#2c1317"}" stroke="${readyCount > 0 ? "#22c55e" : "#ef4444"}" stroke-opacity="0.55" stroke-width="1"/>`,
+    `<text x="${W - 103}" y="53" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" font-weight="bold" fill="${readyCount > 0 ? "#4ade80" : "#fb7185"}">${readyCount}/${entries.length} 账号在线</text>`,
+    `<line x1="${padX}" y1="74" x2="${W - padX}" y2="74" stroke="#242424" stroke-width="1"/>`,
   ];
 
-  // Top 3 KPI Bento Cards
+  // Top 4-Card Summary Grid (antigravity-context-viewer style)
   const kpis = [
     {
-      label: `主用余量 (${activeProfile})`,
+      label: "主用余量",
+      tag: activeProfile,
+      tagColor: "#38bdf8",
       value: poolMinStr,
-      valueColor: poolMinColor,
-      sub: readyCount > 0 ? `账号池 ${readyCount} 个在线可切` : "暂无在线可用账号",
+      sub: readyCount > 0 ? `${readyCount} 个账号在线可切` : "暂无在线可用号",
     },
     {
-      label: "全池缓存命中率",
+      label: "缓存命中",
+      tag: "Cache",
+      tagColor: "#c084fc",
       value: `${sumIn + sumCached > 0 ? poolHitPct.toFixed(1) : "0.0"}%`,
-      valueColor: "#38bdf8",
-      sub: `缓存 ${formatTokenCount(sumCached)} · 新输入 ${formatTokenCount(sumIn)}`,
+      sub: `命中 ${formatTokenCount(sumCached)} Tok`,
     },
     {
-      label: "全池累计交互与输出",
-      value: `${sumTurns} 轮`,
-      valueColor: "#c084fc",
-      sub: `输出 ${formatTokenCount(sumOut)}${sumThink > 0 ? ` · 思考 ${formatTokenCount(sumThink)}` : ""}`,
+      label: "累计对话",
+      tag: "Turns",
+      tagColor: "#4ade80",
+      value: `${sumTurns}`,
+      sub: `新输入 ${formatTokenCount(sumIn)} Tok`,
+    },
+    {
+      label: "累计输出",
+      tag: "Output",
+      tagColor: "#fbbf24",
+      value: formatTokenCount(sumOut),
+      sub: sumThink > 0 ? `思考 ${formatTokenCount(sumThink)} Tok` : `共 ${entries.length} 个账号`,
     },
   ];
+
   kpis.forEach((k, idx) => {
     const kx = padX + idx * (kpiW + kpiGap);
     svg.push(
-      `<rect x="${kx}" y="${kpiY}" width="${kpiW}" height="${kpiH}" rx="12" fill="#0f172a" fill-opacity="0.92" stroke="#1e293b" stroke-width="1.1"/>`,
-      `<line x1="${kx + 14}" y1="${kpiY + 0.5}" x2="${kx + kpiW - 14}" y2="${kpiY + 0.5}" stroke="url(#qTopEdge)" stroke-width="1"/>`,
-      `<text x="${kx + 18}" y="${kpiY + 26}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="13" fill="#94a3b8">${escapeXml(k.label)}</text>`,
-      `<text x="${kx + 18}" y="${kpiY + 58}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="24" font-weight="bold" fill="${k.valueColor}">${escapeXml(k.value)}</text>`,
-      `<text x="${kx + 18}" y="${kpiY + 79}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#64748b">${escapeXml(k.sub)}</text>`
+      `<rect x="${kx}" y="${kpiY}" width="${kpiW}" height="${kpiH}" rx="11" fill="#1b1b1b" stroke="#2c2c2c" stroke-width="1"/>`,
+      `<text x="${kx + 16}" y="${kpiY + 24}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" fill="#8e8e93">${escapeXml(k.label)}</text>`,
+      `<text x="${kx + kpiW - 16}" y="${kpiY + 24}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" font-weight="bold" fill="${k.tagColor}">${escapeXml(k.tag)}</text>`,
+      `<text x="${kx + 16}" y="${kpiY + 58}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="24" font-weight="bold" fill="#f5f5f5">${escapeXml(k.value)}</text>`,
+      `<text x="${kx + 16}" y="${kpiY + 80}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#737373">${escapeXml(k.sub)}</text>`
     );
   });
 
-  // Per-account Bento Cards
+  // Per-account Section Cards
   for (const cl of cardLayouts) {
-    const { entry, y, h, headerH, bodyH, hasStats, hasCredits } = cl;
+    const { entry, y, h, headerH, bodyH, cols, hasStats, hasCredits } = cl;
     const { name, meta, q, isAct, cdSec } = entry;
     const emailStr = meta?.email || q?.email || "";
     const tierName = q?.tierName || meta?.tierName || "";
 
-    let statusDot = "#64748b";
     let statusText = "未登录";
-    let statusPillBg = "#1e293b";
-    let statusPillFg = "#94a3b8";
+    let pillBg = "#222222";
+    let pillBorder = "#3a3a3a";
+    let pillFg = "#8e8e93";
     if (q?.loggedIn) {
       if (q.error) {
-        statusDot = "#fb7185";
-        statusText = "查询异常";
-        statusPillBg = "#2c1118";
-        statusPillFg = "#fb7185";
+        statusText = "异常";
+        pillBg = "#2c1317";
+        pillBorder = "#ef4444";
+        pillFg = "#fb7185";
       } else if (cdSec > 0) {
-        statusDot = "#fbbf24";
         statusText = `冷却 ${Math.ceil(cdSec / 60)}m`;
-        statusPillBg = "#2a1f0b";
-        statusPillFg = "#fbbf24";
+        pillBg = "#2d210d";
+        pillBorder = "#f59e0b";
+        pillFg = "#fbbf24";
       } else {
-        statusDot = "#34d399";
-        statusText = "在线就绪";
-        statusPillBg = "#09251e";
-        statusPillFg = "#34d399";
+        statusText = "正常";
+        pillBg = "#13291b";
+        pillBorder = "#22c55e";
+        pillFg = "#4ade80";
       }
     }
 
-    const cardStroke = isAct ? "#38bdf8" : "#1e293b";
-    const cardStrokeOpacity = isAct ? "0.55" : "1";
+    const cardBorder = isAct ? "#38bdf8" : "#2b2b2b";
+    const cardBorderOp = isAct ? "0.45" : "1";
     svg.push(
-      `<rect x="${padX}" y="${y}" width="${contentW}" height="${h}" rx="14" fill="#0f172a" fill-opacity="0.95" stroke="${cardStroke}" stroke-opacity="${cardStrokeOpacity}" stroke-width="${isAct ? 1.4 : 1.1}"/>`,
-      `<line x1="${padX + 18}" y1="${y + 0.6}" x2="${padX + contentW - 18}" y2="${y + 0.6}" stroke="url(#qTopEdge)" stroke-width="1"/>`
+      `<rect x="${padX}" y="${y}" width="${contentW}" height="${h}" rx="12" fill="#1b1b1b" stroke="${cardBorder}" stroke-opacity="${cardBorderOp}" stroke-width="1"/>`
     );
-    if (isAct) {
-      svg.push(`<rect x="${padX + 1}" y="${y + 16}" width="4" height="${h - 32}" rx="2" fill="#38bdf8"/>`);
-    }
 
-    // Account Header Row
-    let lx = padX + 24;
+    // Header inside account card
+    let lx = padX + 18;
+    const titleDot = isAct ? "#38bdf8" : q?.loggedIn && !q?.error && !(cdSec > 0) ? "#4ade80" : "#737373";
     svg.push(
-      `<circle cx="${lx}" cy="${y + 30}" r="5" fill="${statusDot}"/>`,
-      `<text x="${lx + 14}" y="${y + 36}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="19" font-weight="bold" fill="#f8fafc">${escapeXml(name)}</text>`
+      `<circle cx="${lx + 5}" cy="${y + 26}" r="4.5" fill="${titleDot}"/>`,
+      `<text x="${lx + 16}" y="${y + 32}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="16" font-weight="bold" fill="#f5f5f5">${escapeXml(name)}</text>`
     );
-    lx += 14 + textDisplayWidth(name) * 10 + 12;
+    lx += 16 + textDisplayWidth(name) * 9 + 10;
 
     if (isAct) {
       svg.push(
-        `<rect x="${lx}" y="${y + 18}" width="74" height="24" rx="12" fill="#0c2d48" stroke="#38bdf8" stroke-opacity="0.6" stroke-width="1"/>`,
-        `<text x="${lx + 37}" y="${y + 34}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" font-weight="bold" fill="#38bdf8">当前使用</text>`
+        `<rect x="${lx}" y="${y + 15}" width="64" height="22" rx="11" fill="#0f293a" stroke="#38bdf8" stroke-opacity="0.55" stroke-width="1"/>`,
+        `<text x="${lx + 32}" y="${y + 30}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="11.5" font-weight="bold" fill="#38bdf8">主用中</text>`
       );
-      lx += 82;
+      lx += 72;
     }
     if (tierName) {
-      const tw = Math.max(84, textDisplayWidth(tierName) * 7.5 + 22);
+      const tw = Math.max(78, textDisplayWidth(tierName) * 7 + 18);
       svg.push(
-        `<rect x="${lx}" y="${y + 18}" width="${tw}" height="24" rx="12" fill="#1e1b4b" stroke="#818cf8" stroke-opacity="0.45" stroke-width="1"/>`,
-        `<text x="${lx + tw / 2}" y="${y + 34}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#c7d2fe">${escapeXml(tierName)}</text>`
+        `<rect x="${lx}" y="${y + 15}" width="${tw}" height="22" rx="11" fill="#232323" stroke="#363636" stroke-width="1"/>`,
+        `<text x="${lx + tw / 2}" y="${y + 30}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="11.5" fill="#b4b4b8">${escapeXml(tierName)}</text>`
       );
     }
 
-    // Right side: email + status pill
-    const pillW = Math.max(76, textDisplayWidth(statusText) * 7.5 + 20);
-    const pillX = padX + contentW - 20 - pillW;
+    const pillW = Math.max(54, textDisplayWidth(statusText) * 7.5 + 22);
+    const pillX = padX + contentW - 18 - pillW;
     svg.push(
-      `<rect x="${pillX}" y="${y + 18}" width="${pillW}" height="24" rx="12" fill="${statusPillBg}"/>`,
-      `<text x="${pillX + pillW / 2}" y="${y + 34}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" font-weight="bold" fill="${statusPillFg}">${escapeXml(statusText)}</text>`
+      `<rect x="${pillX}" y="${y + 15}" width="${pillW}" height="22" rx="11" fill="${pillBg}" stroke="${pillBorder}" stroke-opacity="0.55" stroke-width="1"/>`,
+      `<text x="${pillX + pillW / 2}" y="${y + 30}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="11.5" font-weight="bold" fill="${pillFg}">${escapeXml(statusText)}</text>`
     );
     if (emailStr) {
       svg.push(
-        `<text x="${pillX - 12}" y="${y + 35}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="13" fill="#94a3b8">${escapeXml(trimMiddle(emailStr, 36))}</text>`
+        `<text x="${pillX - 12}" y="${y + 31}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" fill="#737373">${escapeXml(trimMiddle(emailStr, 32))}</text>`
       );
     }
 
-    // Account Body: Buckets 2-col Bento Grid
+    // Body: Neutral Metric Sub-Cards with Circular Ring Gauge + Sleek Bar
     const bodyY = y + headerH;
-    const innerW = contentW - 40; // 920
+    const innerW = contentW - 36; // 804
     const buckets = Array.isArray(q?.buckets) ? q.buckets : [];
 
     if (!q?.loggedIn) {
       svg.push(
-        `<rect x="${padX + 20}" y="${bodyY}" width="${innerW}" height="${bodyH}" rx="10" fill="#090e1a" stroke="#1e293b"/>`,
-        `<text x="${padX + 38}" y="${bodyY + 33}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" fill="#64748b">尚未登录 · 发送 /login ${escapeXml(name)} 完成 Google OAuth 授权</text>`
+        `<rect x="${padX + 18}" y="${bodyY}" width="${innerW}" height="${bodyH}" rx="9" fill="#212121" stroke="#2d2d2d"/>`,
+        `<text x="${padX + 34}" y="${bodyY + 31}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="13.5" fill="#8e8e93">尚未登录 · 发送 /login ${escapeXml(name)} 完成授权</text>`
       );
     } else if (q.error) {
       svg.push(
-        `<rect x="${padX + 20}" y="${bodyY}" width="${innerW}" height="${bodyH}" rx="10" fill="#1c0d12" stroke="#f43f5e" stroke-opacity="0.45"/>`,
-        `<text x="${padX + 38}" y="${bodyY + 33}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" fill="#fda4af">额度查询失败: ${escapeXml(trimMiddle(q.error, 72))}</text>`
+        `<rect x="${padX + 18}" y="${bodyY}" width="${innerW}" height="${bodyH}" rx="9" fill="#231618" stroke="#52252c"/>`,
+        `<text x="${padX + 34}" y="${bodyY + 31}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="13.5" fill="#fda4af">额度查询失败: ${escapeXml(trimMiddle(q.error, 68))}</text>`
       );
     } else if (buckets.length === 0) {
       svg.push(
-        `<rect x="${padX + 20}" y="${bodyY}" width="${innerW}" height="${bodyH}" rx="10" fill="#090e1a" stroke="#1e293b"/>`,
-        `<text x="${padX + 38}" y="${bodyY + 33}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" fill="#94a3b8">暂无模型额度数据</text>`
+        `<rect x="${padX + 18}" y="${bodyY}" width="${innerW}" height="${bodyH}" rx="9" fill="#212121" stroke="#2d2d2d"/>`,
+        `<text x="${padX + 34}" y="${bodyY + 31}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="13.5" fill="#8e8e93">暂无模型额度数据</text>`
       );
     } else {
-      const halfW = Math.floor((innerW - subGap) / 2); // 453
+      const tileW = Math.floor((innerW - subGap * (cols - 1)) / cols);
       buckets.forEach((b, bi) => {
-        const isOddLast = buckets.length % 2 === 1 && bi === buckets.length - 1;
-        const col = bi % 2;
-        const row = Math.floor(bi / 2);
-        const bx = padX + 20 + (isOddLast ? 0 : col * (halfW + subGap));
+        const col = bi % cols;
+        const row = Math.floor(bi / cols);
+        const bx = padX + 18 + col * (tileW + subGap);
         const by = bodyY + row * (subH + subGap);
-        const bw = isOddLast ? innerW : halfW;
 
         const frac = Math.max(0, Math.min(1, Number(b.remainingFraction ?? 0)));
         const remPct = (frac * 100).toFixed(1).replace(/\.0$/, "");
         const usedPct = ((1 - frac) * 100).toFixed(1).replace(/\.0$/, "");
         const resetInfo = formatQuotaReset(b.resetTime, frac) || "满额";
         const th = quotaTheme(frac);
-        const barTrackW = bw - 36;
-        const barFillW = frac <= 0.001 ? 0 : Math.max(6, Math.round(barTrackW * frac));
+
+        // Circular ring gauge (radius 14)
+        const r = 13;
+        const circ = 2 * Math.PI * r;
+        const dash = Math.max(0, Math.min(circ, circ * frac));
+        const rcx = bx + tileW - 28;
+        const rcy = by + 30;
+
+        const barW = tileW - 32;
+        const fillW = frac <= 0.001 ? 0 : Math.max(6, Math.round(barW * frac));
 
         svg.push(
-          `<rect x="${bx}" y="${by}" width="${bw}" height="${subH}" rx="10" fill="#080d18" stroke="#1e293b"/>`,
-          `<text x="${bx + 18}" y="${by + 28}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" font-weight="bold" fill="#e2e8f0">${escapeXml(b.label)}</text>`,
-          `<text x="${bx + bw - 18}" y="${by + 29}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="20" font-weight="bold" fill="${th.text}">${remPct}%</text>`,
-          `<rect x="${bx + 18}" y="${by + 42}" width="${barTrackW}" height="8" rx="4" fill="#162033"/>`,
-          ...(barFillW > 0
-            ? [`<rect x="${bx + 18}" y="${by + 42}" width="${barFillW}" height="8" rx="4" fill="${th.grad}"/>`]
+          `<rect x="${bx}" y="${by}" width="${tileW}" height="${subH}" rx="9" fill="#222222" stroke="#2e2e2e" stroke-width="1"/>`,
+          `<text x="${bx + 16}" y="${by + 24}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="13" fill="#8e8e93">${escapeXml(b.label)}</text>`,
+          `<text x="${bx + 16}" y="${by + 51}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="21" font-weight="bold" fill="${th.text}">${remPct}%</text>`,
+          `<circle cx="${rcx}" cy="${rcy}" r="${r}" fill="none" stroke="#303030" stroke-width="3.5"/>`,
+          ...(frac > 0.001
+            ? [
+                `<circle cx="${rcx}" cy="${rcy}" r="${r}" fill="none" stroke="${th.ring}" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="${dash.toFixed(2)} ${circ.toFixed(2)}" transform="rotate(-90 ${rcx} ${rcy})"/>`,
+              ]
             : []),
-          `<text x="${bx + 18}" y="${by + 70}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#64748b">已用 ${usedPct}%</text>`,
-          `<text x="${bx + bw - 18}" y="${by + 70}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#94a3b8">${escapeXml(resetInfo)}</text>`
+          `<rect x="${bx + 16}" y="${by + 65}" width="${barW}" height="6" rx="3" fill="#2f2f2f"/>`,
+          ...(fillW > 0
+            ? [`<rect x="${bx + 16}" y="${by + 65}" width="${fillW}" height="6" rx="3" fill="${th.accent}"/>`]
+            : []),
+          `<text x="${bx + 16}" y="${by + 91}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="11.5" fill="#737373">已用 ${usedPct}%</text>`,
+          `<text x="${bx + tileW - 16}" y="${by + 91}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="11.5" fill="#a3a3a3">${escapeXml(resetInfo)}</text>`
         );
       });
     }
 
-    // Account Footer Telemetry Strip
+    // Account Checkmark Insight Strip
     if (hasStats || hasCredits) {
-      const fy = bodyY + bodyH + 12;
-      svg.push(`<line x1="${padX + 20}" y1="${fy}" x2="${padX + contentW - 20}" y2="${fy}" stroke="#1e293b" stroke-width="1"/>`);
-      if (hasStats) {
-        const st = meta.usageStats;
-        const { hitPct } = calcCacheHitPct(st.input || 0, st.cached || 0);
-        const thPart = st.thinking ? ` · 思考 ${formatTokenCount(st.thinking)}` : "";
-        const stLine = `本机统计: ${st.turns || 0} 轮 · 缓存 ${formatTokenCount(st.cached || 0)} (${hitPct.toFixed(1)}%) · 新输入 ${formatTokenCount(st.input || 0)} · 输出 ${formatTokenCount(st.output || 0)}${thPart}`;
+      const fy = bodyY + bodyH + 24;
+      const st = meta.usageStats || {};
+      const { hitPct } = calcCacheHitPct(st.input || 0, st.cached || 0);
+      const thPart = st.thinking ? ` · 思考 ${formatTokenCount(st.thinking)}` : "";
+      const stLine = hasStats
+        ? `本机已用 ${st.turns || 0} 轮 · 缓存 ${formatTokenCount(st.cached || 0)} (${hitPct.toFixed(1)}%) · 新输入 ${formatTokenCount(st.input || 0)} · 输出 ${formatTokenCount(st.output || 0)}${thPart}`
+        : "";
+      if (stLine) {
         svg.push(
-          `<text x="${padX + 20}" y="${fy + 25}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" fill="#94a3b8">${escapeXml(stLine)}</text>`
+          `<text x="${padX + 18}" y="${fy}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" font-weight="bold" fill="#4ade80">✓</text>`,
+          `<text x="${padX + 34}" y="${fy}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#a3a3a3">${escapeXml(stLine)}</text>`
         );
       }
       if (hasCredits) {
@@ -1284,7 +1278,7 @@ function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1"
           .join(", ");
         if (credText) {
           svg.push(
-            `<text x="${padX + contentW - 20}" y="${fy + 25}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" fill="#38bdf8">积分 ${escapeXml(credText)}</text>`
+            `<text x="${padX + contentW - 18}" y="${fy}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#38bdf8">积分 ${escapeXml(credText)}</text>`
           );
         }
       }

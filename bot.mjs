@@ -2289,19 +2289,6 @@ class AgyTurnRunner {
     ].join("\n");
 
     await sendLongText(this.chatId, `${body}\n\n${footer}`, this.statusMsgId);
-
-    if (!this.aborted && finalRes?.ok) {
-      const tables = extractMarkdownTables(body).slice(0, 3);
-      for (let idx = 0; idx < tables.length; idx++) {
-        try {
-          const imgPath = renderMarkdownTablePng(tables[idx], idx);
-          const cap = tables[idx].title ? `📊 ${tables[idx].title}` : "📊 表格附图";
-          await sendPhoto(this.chatId, imgPath, cap);
-        } catch (e) {
-          console.error("table png err:", e.message);
-        }
-      }
-    }
   }
 }
 

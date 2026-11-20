@@ -1050,7 +1050,7 @@ function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1"
     const q = e.q || {};
     const buckets = Array.isArray(q.buckets) ? q.buckets : [];
     const headerH = 52;
-    const cols = buckets.length >= 3 ? 3 : Math.max(1, buckets.length);
+    const cols = buckets.length === 4 ? 2 : buckets.length >= 3 ? 3 : Math.max(1, buckets.length);
     let bodyH = 52;
     if (q.loggedIn && !q.error && buckets.length > 0) {
       const rows = Math.ceil(buckets.length / cols);
@@ -2406,30 +2406,48 @@ async function fetchProfileQuota(profileName, { forceRefresh = false } = {}) {
 
   const meta = cfg.profiles?.[profileName] || {};
   const needAssist =
-    !meta.tierCheckedAt || Date.now() - meta.tierCheckedAt > LOAD_ASSIST_TTL_MS;
+    !meta.projectId || !meta.tierCheckedAt || Date.now() - meta.tierCheckedAt > LOAD_ASSIST_TTL_MS;
 
   const proxyUrl = cfg.proxyEnabled && cfg.proxyUrl ? cfg.proxyUrl : "";
   const queryApi = async (token) => {
     const headers = {
       Authorization: `Bearer ${token}`,
-      "User-Agent": "antigravity/1.5.12 linux/amd64",
+      "User-Agent": "antigravity/2.32.1 linux/amd64",
     };
-    const modelsPromise = httpsJsonPostWithProxy(`${CLOUD_CODE_BASE}:fetchAvailableModels`, {}, headers, proxyUrl, 9000);
-    const summaryPromise = httpsJsonPostWithProxy(`${CLOUD_CODE_BASE}:retrieveUserQuotaSummary`, {}, headers, proxyUrl, 9000);
-    const assistPromise = needAssist
-      ? httpsJsonPostWithProxy(`${CLOUD_CODE_BASE}:loadCodeAssist`, { metadata: { ideType: "ANTIGRAVITY" } }, headers, proxyUrl, 9000)
-      : Promise.resolve(null);
-    const [modelsRes, summaryRes, assistRes] = await Promise.allSettled([modelsPromise, summaryPromise, assistPromise]);
-    return { modelsRes, summaryRes, assistRes };
+    let projectId = meta.projectId || "";
+    let assistRes = { status: "fulfilled", value: null };
+    if (needAssist) {
+      try {
+        const aVal = await httpsJsonPostWithProxy(
+          `${CLOUD_CODE_BASE}:loadCodeAssist`,
+          { metadata: { ideType: "ANTIGRAVITY" } },
+          headers,
+          proxyUrl,
+          9000
+        );
+        assistRes = { status: "fulfilled", value: aVal };
+        if (aVal && aVal.status < 400) {
+          const p = aVal.data?.cloudaicompanionProject;
+          projectId = (typeof p === "string" ? p : p?.id) || projectId;
+        }
+      } catch (e) {
+        assistRes = { status: "rejected", reason: e };
+      }
+    }
+    const payload = projectId ? { project: projectId } : {};
+    const modelsPromise = httpsJsonPostWithProxy(`${CLOUD_CODE_BASE}:fetchAvailableModels`, payload, headers, proxyUrl, 9000);
+    const summaryPromise = httpsJsonPostWithProxy(`${CLOUD_CODE_BASE}:retrieveUserQuotaSummary`, payload, headers, proxyUrl, 9000);
+    const [modelsRes, summaryRes] = await Promise.allSettled([modelsPromise, summaryPromise]);
+    return { modelsRes, summaryRes, assistRes, projectId };
   };
 
-  let { modelsRes, summaryRes, assistRes } = await queryApi(info.accessToken);
+  let { modelsRes, summaryRes, assistRes, projectId } = await queryApi(info.accessToken);
   const mStatus = modelsRes.status === "fulfilled" ? modelsRes.value.status : 0;
   if (mStatus === 401 || mStatus === 403) {
     await runAgyQuick(profileName, ["models"], 20000, { isolated: true }).catch(() => {});
     info = readProfileOAuthInfo(profileName);
     if (info.accessToken) {
-      ({ modelsRes, summaryRes, assistRes } = await queryApi(info.accessToken));
+      ({ modelsRes, summaryRes, assistRes, projectId } = await queryApi(info.accessToken));
     }
   }
 
@@ -2462,6 +2480,7 @@ async function fetchProfileQuota(profileName, { forceRefresh = false } = {}) {
       ...(cfg.profiles?.[profileName] || {}),
       tierName,
       availableCredits,
+      ...(projectId ? { projectId } : {}),
       tierCheckedAt: Date.now(),
     };
     saveConfig();
@@ -2859,7 +2878,9 @@ class AgyTurnRunner {
         const responseText = finalResult?.response || attemptText || "";
         const ttftMs = firstTextAt ? Math.max(0, firstTextAt - attemptStart) : 0;
         const endAt = Date.now();
-        const genSec = firstTextAt ? Math.max(0.2, (endAt - firstTextAt) / 1000) : Math.max(0.2, (endAt - attemptStart) / 1000);
+        const streamSec = firstTextAt ? (endAt - firstTextAt) / 1000 : 0;
+        const totalSec = Math.max(0.5, (endAt - attemptStart) / 1000);
+        const genSec = this.toolHistory.length > 0 || streamSec < 1.0 ? totalSec : streamSec;
         const tokPerSec = attemptUsage.output > 0 ? Number((attemptUsage.output / genSec).toFixed(1)) : 0;
         resolve({ ok, responseText, newConvId, errMsg, code, sig, attemptText, attemptUsage, ttftMs, tokPerSec });
       });

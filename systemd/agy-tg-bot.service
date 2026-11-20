@@ -1,0 +1,17 @@
+[Unit]
+Description=Antigravity CLI (agy) Telegram Bot Bridge
+After=network-online.target mihomo.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/agy-tg-bot
+Environment=HOME=/root
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/node /opt/agy-tg-bot/bot.mjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

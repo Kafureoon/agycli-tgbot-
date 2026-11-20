@@ -1,0 +1,7 @@
+[Unit]
+Description=Update Mihomo Subscription
+After=network-online.target mihomo.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/mihomo/update-sub.py

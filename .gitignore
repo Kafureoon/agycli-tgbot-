@@ -1,0 +1,9 @@
+node_modules/
+config.json
+ledger.json
+sub.url
+sub_info.json
+*.log
+*.tmp
+.env
+.DS_Store

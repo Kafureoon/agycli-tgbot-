@@ -445,7 +445,7 @@ async function tg(method, body = {}, opts = {}) {
   throw lastErr;
 }
 
-function httpsMultipartPhoto(urlStr, chatId, filePath, caption = "", timeoutMs = 30000) {
+function httpsMultipartPhoto(urlStr, chatId, filePath, caption = "", timeoutMs = 30000, extraFields = {}) {
   return new Promise((resolve, reject) => {
     const boundary = `----AgyTgBoundary${Date.now().toString(16)}`;
     const fileBuf = fs.readFileSync(filePath);
@@ -456,6 +456,13 @@ function httpsMultipartPhoto(urlStr, chatId, filePath, caption = "", timeoutMs =
     if (caption) {
       parts.push(
         Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`, "utf8")
+      );
+    }
+    for (const [k, v] of Object.entries(extraFields || {})) {
+      if (v === undefined || v === null) continue;
+      const valStr = typeof v === "string" ? v : JSON.stringify(v);
+      parts.push(
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${valStr}\r\n`, "utf8")
       );
     }
     parts.push(
@@ -490,25 +497,52 @@ function httpsMultipartPhoto(urlStr, chatId, filePath, caption = "", timeoutMs =
           try {
             resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
           } catch (e) {
-            reject(new Error(`Invalid JSON from TG sendPhoto (${res.statusCode}): ${e.message}`));
+            reject(new Error(`Invalid JSON from TG (${res.statusCode}): ${e.message}`));
           }
         });
       }
     );
-    req.on("timeout", () => req.destroy(new Error(`TG sendPhoto timeout (${timeoutMs}ms)`)));
+    req.on("timeout", () => req.destroy(new Error(`TG photo timeout (${timeoutMs}ms)`)));
     req.on("error", reject);
     req.write(body);
     req.end();
   });
 }
 
-async function sendPhoto(chatId, filePath, caption = "") {
+async function sendPhoto(chatId, filePath, caption = "", replyMarkup = null) {
   let lastErr;
+  const extra = replyMarkup ? { reply_markup: replyMarkup } : {};
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const data = await httpsMultipartPhoto(`${TG_API}/sendPhoto`, chatId, filePath, caption, 30000);
+      const data = await httpsMultipartPhoto(`${TG_API}/sendPhoto`, chatId, filePath, caption, 30000, extra);
       if (!data.ok) {
         const err = new Error(`TG sendPhoto ${data.error_code}: ${data.description}`);
+        err.code = data.error_code;
+        throw err;
+      }
+      return data.result;
+    } catch (e) {
+      lastErr = e;
+      if (typeof e.code === "number") throw e;
+      if (attempt < 3) await new Promise((r) => setTimeout(r, attempt * 400));
+    }
+  }
+  throw lastErr;
+}
+
+async function editPhoto(chatId, messageId, filePath, caption = "", replyMarkup = null) {
+  let lastErr;
+  const mediaObj = { type: "photo", media: "attach://photo", ...(caption ? { caption } : {}) };
+  const extra = {
+    message_id: String(messageId),
+    media: JSON.stringify(mediaObj),
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+  };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const data = await httpsMultipartPhoto(`${TG_API}/editMessageMedia`, chatId, filePath, "", 30000, extra);
+      if (!data.ok) {
+        const err = new Error(`TG editMessageMedia ${data.error_code}: ${data.description}`);
         err.code = data.error_code;
         throw err;
       }
@@ -953,6 +987,321 @@ ${diskCardsSvg}
     fitTo: { mode: "width", value: 920 },
   });
   const outPath = path.join(STATUS_IMG_DIR, `status_${Date.now()}.png`);
+  fs.writeFileSync(outPath, resvg.render().asPng());
+  return outPath;
+}
+
+function renderQuotaCardPng({ entries = [], updTime = "", activeProfile = "acc1" } = {}) {
+  const W = 1040;
+  const padX = 40;
+  const contentW = W - padX * 2; // 960
+  const kpiGap = 18;
+  const kpiW = Math.floor((contentW - kpiGap * 2) / 3); // 308
+  const kpiY = 122;
+  const kpiH = 92;
+
+  let readyCount = 0;
+  let sumTurns = 0;
+  let sumIn = 0;
+  let sumCached = 0;
+  let sumOut = 0;
+  let sumThink = 0;
+  let activeMinPct = null;
+
+  for (const e of entries) {
+    const q = e.q || {};
+    const st = e.meta?.usageStats || {};
+    sumTurns += st.turns || 0;
+    sumIn += st.input || 0;
+    sumCached += st.cached || 0;
+    sumOut += st.output || 0;
+    sumThink += st.thinking || 0;
+    if (q.loggedIn && !q.error && !(e.cdSec > 0)) readyCount++;
+    if (e.isAct && q.buckets?.length > 0) {
+      activeMinPct = Math.min(...q.buckets.map((b) => b.remainingFraction * 100));
+    }
+  }
+
+  const { hitPct: poolHitPct } = calcCacheHitPct(sumIn, sumCached);
+  const poolMinStr = activeMinPct !== null ? `${activeMinPct.toFixed(1).replace(/\.0$/, "")}%` : "--";
+  const poolMinColor =
+    activeMinPct === null ? "#94a3b8" : activeMinPct >= 50 ? "#34d399" : activeMinPct >= 20 ? "#fbbf24" : "#fb7185";
+
+  const quotaTheme = (frac) => {
+    const pct = frac * 100;
+    if (pct >= 50) return { text: "#34d399", grad: "url(#qGradGreen)", glow: "#10b981" };
+    if (pct >= 20) return { text: "#fbbf24", grad: "url(#qGradAmber)", glow: "#f59e0b" };
+    return { text: "#fb7185", grad: "url(#qGradRose)", glow: "#f43f5e" };
+  };
+
+  // Pre-calculate account card heights
+  const subGap = 14;
+  const subH = 84;
+  const cardGap = 18;
+  const cardsStartY = kpiY + kpiH + 22;
+  let curY = cardsStartY;
+  const cardLayouts = entries.map((e) => {
+    const q = e.q || {};
+    const buckets = Array.isArray(q.buckets) ? q.buckets : [];
+    const headerH = 58;
+    let bodyH = 56; // banner fallback
+    if (q.loggedIn && !q.error && buckets.length > 0) {
+      const rows = Math.ceil(buckets.length / 2);
+      bodyH = rows * subH + (rows - 1) * subGap;
+    }
+    const st = e.meta?.usageStats;
+    const hasStats = Boolean(st && (st.input || st.output || st.cached));
+    const hasCredits = Array.isArray(q.availableCredits) && q.availableCredits.length > 0;
+    const footerH = hasStats || hasCredits ? 42 : 12;
+    const totalH = headerH + bodyH + footerH + 14;
+    const layout = { entry: e, y: curY, h: totalH, headerH, bodyH, footerH, hasStats, hasCredits };
+    curY += totalH + cardGap;
+    return layout;
+  });
+
+  const H = Math.max(360, curY + 26);
+
+  const svg = [
+    `<?xml version="1.0" encoding="UTF-8"?>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`,
+    `<defs>`,
+    `  <radialGradient id="qGlowA" cx="15%" cy="8%" r="55%">`,
+    `    <stop offset="0%" stop-color="#312e81" stop-opacity="0.34"/>`,
+    `    <stop offset="100%" stop-color="#06080f" stop-opacity="0"/>`,
+    `  </radialGradient>`,
+    `  <radialGradient id="qGlowB" cx="88%" cy="12%" r="48%">`,
+    `    <stop offset="0%" stop-color="#0e7490" stop-opacity="0.22"/>`,
+    `    <stop offset="100%" stop-color="#06080f" stop-opacity="0"/>`,
+    `  </radialGradient>`,
+    `  <linearGradient id="qGradGreen" x1="0%" y1="0%" x2="100%" y2="0%">`,
+    `    <stop offset="0%" stop-color="#059669"/>`,
+    `    <stop offset="100%" stop-color="#34d399"/>`,
+    `  </linearGradient>`,
+    `  <linearGradient id="qGradAmber" x1="0%" y1="0%" x2="100%" y2="0%">`,
+    `    <stop offset="0%" stop-color="#d97706"/>`,
+    `    <stop offset="100%" stop-color="#fbbf24"/>`,
+    `  </linearGradient>`,
+    `  <linearGradient id="qGradRose" x1="0%" y1="0%" x2="100%" y2="0%">`,
+    `    <stop offset="0%" stop-color="#e11d48"/>`,
+    `    <stop offset="100%" stop-color="#fb7185"/>`,
+    `  </linearGradient>`,
+    `  <linearGradient id="qTopEdge" x1="0%" y1="0%" x2="100%" y2="0%">`,
+    `    <stop offset="0%" stop-color="#ffffff" stop-opacity="0.03"/>`,
+    `    <stop offset="50%" stop-color="#ffffff" stop-opacity="0.16"/>`,
+    `    <stop offset="100%" stop-color="#ffffff" stop-opacity="0.03"/>`,
+    `  </linearGradient>`,
+    `</defs>`,
+    `<rect width="${W}" height="${H}" rx="20" fill="#06080f"/>`,
+    `<rect width="${W}" height="${H}" rx="20" fill="url(#qGlowA)"/>`,
+    `<rect width="${W}" height="${H}" rx="20" fill="url(#qGlowB)"/>`,
+    `<rect x="16" y="16" width="${W - 32}" height="${H - 32}" rx="16" fill="#0b101d" fill-opacity="0.88" stroke="#1e293b" stroke-width="1.2"/>`,
+    `<line x1="48" y1="16.5" x2="${W - 48}" y2="16.5" stroke="url(#qTopEdge)" stroke-width="1.2"/>`,
+    // Header
+    `<text x="${padX}" y="64" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="25" font-weight="bold" fill="#f8fafc">Antigravity · 模型额度与算力看板</text>`,
+    `<text x="${padX}" y="94" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" fill="#94a3b8">更新时间 ${escapeXml(updTime)} · 共 ${entries.length} 个账号 · 当前主用 ${escapeXml(activeProfile)}</text>`,
+    `<rect x="${W - 216}" y="44" width="176" height="36" rx="18" fill="${readyCount > 0 ? "#09251e" : "#2a1218"}" stroke="${readyCount > 0 ? "#10b981" : "#f43f5e"}" stroke-width="1.2"/>`,
+    `<circle cx="${W - 192}" cy="62" r="4.5" fill="${readyCount > 0 ? "#34d399" : "#fb7185"}"/>`,
+    `<text x="${W - 118}" y="67" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" font-weight="bold" fill="${readyCount > 0 ? "#34d399" : "#fb7185"}">${readyCount}/${entries.length} 账号就绪</text>`,
+  ];
+
+  // Top 3 KPI Bento Cards
+  const kpis = [
+    {
+      label: `主用余量 (${activeProfile})`,
+      value: poolMinStr,
+      valueColor: poolMinColor,
+      sub: readyCount > 0 ? `账号池 ${readyCount} 个在线可切` : "暂无在线可用账号",
+    },
+    {
+      label: "全池缓存命中率",
+      value: `${sumIn + sumCached > 0 ? poolHitPct.toFixed(1) : "0.0"}%`,
+      valueColor: "#38bdf8",
+      sub: `缓存 ${formatTokenCount(sumCached)} · 新输入 ${formatTokenCount(sumIn)}`,
+    },
+    {
+      label: "全池累计交互与输出",
+      value: `${sumTurns} 轮`,
+      valueColor: "#c084fc",
+      sub: `输出 ${formatTokenCount(sumOut)}${sumThink > 0 ? ` · 思考 ${formatTokenCount(sumThink)}` : ""}`,
+    },
+  ];
+  kpis.forEach((k, idx) => {
+    const kx = padX + idx * (kpiW + kpiGap);
+    svg.push(
+      `<rect x="${kx}" y="${kpiY}" width="${kpiW}" height="${kpiH}" rx="12" fill="#0f172a" fill-opacity="0.92" stroke="#1e293b" stroke-width="1.1"/>`,
+      `<line x1="${kx + 14}" y1="${kpiY + 0.5}" x2="${kx + kpiW - 14}" y2="${kpiY + 0.5}" stroke="url(#qTopEdge)" stroke-width="1"/>`,
+      `<text x="${kx + 18}" y="${kpiY + 26}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="13" fill="#94a3b8">${escapeXml(k.label)}</text>`,
+      `<text x="${kx + 18}" y="${kpiY + 58}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="24" font-weight="bold" fill="${k.valueColor}">${escapeXml(k.value)}</text>`,
+      `<text x="${kx + 18}" y="${kpiY + 79}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#64748b">${escapeXml(k.sub)}</text>`
+    );
+  });
+
+  // Per-account Bento Cards
+  for (const cl of cardLayouts) {
+    const { entry, y, h, headerH, bodyH, hasStats, hasCredits } = cl;
+    const { name, meta, q, isAct, cdSec } = entry;
+    const emailStr = meta?.email || q?.email || "";
+    const tierName = q?.tierName || meta?.tierName || "";
+
+    let statusDot = "#64748b";
+    let statusText = "未登录";
+    let statusPillBg = "#1e293b";
+    let statusPillFg = "#94a3b8";
+    if (q?.loggedIn) {
+      if (q.error) {
+        statusDot = "#fb7185";
+        statusText = "查询异常";
+        statusPillBg = "#2c1118";
+        statusPillFg = "#fb7185";
+      } else if (cdSec > 0) {
+        statusDot = "#fbbf24";
+        statusText = `冷却 ${Math.ceil(cdSec / 60)}m`;
+        statusPillBg = "#2a1f0b";
+        statusPillFg = "#fbbf24";
+      } else {
+        statusDot = "#34d399";
+        statusText = "在线就绪";
+        statusPillBg = "#09251e";
+        statusPillFg = "#34d399";
+      }
+    }
+
+    const cardStroke = isAct ? "#38bdf8" : "#1e293b";
+    const cardStrokeOpacity = isAct ? "0.55" : "1";
+    svg.push(
+      `<rect x="${padX}" y="${y}" width="${contentW}" height="${h}" rx="14" fill="#0f172a" fill-opacity="0.95" stroke="${cardStroke}" stroke-opacity="${cardStrokeOpacity}" stroke-width="${isAct ? 1.4 : 1.1}"/>`,
+      `<line x1="${padX + 18}" y1="${y + 0.6}" x2="${padX + contentW - 18}" y2="${y + 0.6}" stroke="url(#qTopEdge)" stroke-width="1"/>`
+    );
+    if (isAct) {
+      svg.push(`<rect x="${padX + 1}" y="${y + 16}" width="4" height="${h - 32}" rx="2" fill="#38bdf8"/>`);
+    }
+
+    // Account Header Row
+    let lx = padX + 24;
+    svg.push(
+      `<circle cx="${lx}" cy="${y + 30}" r="5" fill="${statusDot}"/>`,
+      `<text x="${lx + 14}" y="${y + 36}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="19" font-weight="bold" fill="#f8fafc">${escapeXml(name)}</text>`
+    );
+    lx += 14 + textDisplayWidth(name) * 10 + 12;
+
+    if (isAct) {
+      svg.push(
+        `<rect x="${lx}" y="${y + 18}" width="74" height="24" rx="12" fill="#0c2d48" stroke="#38bdf8" stroke-opacity="0.6" stroke-width="1"/>`,
+        `<text x="${lx + 37}" y="${y + 34}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" font-weight="bold" fill="#38bdf8">当前使用</text>`
+      );
+      lx += 82;
+    }
+    if (tierName) {
+      const tw = Math.max(84, textDisplayWidth(tierName) * 7.5 + 22);
+      svg.push(
+        `<rect x="${lx}" y="${y + 18}" width="${tw}" height="24" rx="12" fill="#1e1b4b" stroke="#818cf8" stroke-opacity="0.45" stroke-width="1"/>`,
+        `<text x="${lx + tw / 2}" y="${y + 34}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#c7d2fe">${escapeXml(tierName)}</text>`
+      );
+    }
+
+    // Right side: email + status pill
+    const pillW = Math.max(76, textDisplayWidth(statusText) * 7.5 + 20);
+    const pillX = padX + contentW - 20 - pillW;
+    svg.push(
+      `<rect x="${pillX}" y="${y + 18}" width="${pillW}" height="24" rx="12" fill="${statusPillBg}"/>`,
+      `<text x="${pillX + pillW / 2}" y="${y + 34}" text-anchor="middle" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" font-weight="bold" fill="${statusPillFg}">${escapeXml(statusText)}</text>`
+    );
+    if (emailStr) {
+      svg.push(
+        `<text x="${pillX - 12}" y="${y + 35}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="13" fill="#94a3b8">${escapeXml(trimMiddle(emailStr, 36))}</text>`
+      );
+    }
+
+    // Account Body: Buckets 2-col Bento Grid
+    const bodyY = y + headerH;
+    const innerW = contentW - 40; // 920
+    const buckets = Array.isArray(q?.buckets) ? q.buckets : [];
+
+    if (!q?.loggedIn) {
+      svg.push(
+        `<rect x="${padX + 20}" y="${bodyY}" width="${innerW}" height="${bodyH}" rx="10" fill="#090e1a" stroke="#1e293b"/>`,
+        `<text x="${padX + 38}" y="${bodyY + 33}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" fill="#64748b">尚未登录 · 发送 /login ${escapeXml(name)} 完成 Google OAuth 授权</text>`
+      );
+    } else if (q.error) {
+      svg.push(
+        `<rect x="${padX + 20}" y="${bodyY}" width="${innerW}" height="${bodyH}" rx="10" fill="#1c0d12" stroke="#f43f5e" stroke-opacity="0.45"/>`,
+        `<text x="${padX + 38}" y="${bodyY + 33}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" fill="#fda4af">额度查询失败: ${escapeXml(trimMiddle(q.error, 72))}</text>`
+      );
+    } else if (buckets.length === 0) {
+      svg.push(
+        `<rect x="${padX + 20}" y="${bodyY}" width="${innerW}" height="${bodyH}" rx="10" fill="#090e1a" stroke="#1e293b"/>`,
+        `<text x="${padX + 38}" y="${bodyY + 33}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" fill="#94a3b8">暂无模型额度数据</text>`
+      );
+    } else {
+      const halfW = Math.floor((innerW - subGap) / 2); // 453
+      buckets.forEach((b, bi) => {
+        const isOddLast = buckets.length % 2 === 1 && bi === buckets.length - 1;
+        const col = bi % 2;
+        const row = Math.floor(bi / 2);
+        const bx = padX + 20 + (isOddLast ? 0 : col * (halfW + subGap));
+        const by = bodyY + row * (subH + subGap);
+        const bw = isOddLast ? innerW : halfW;
+
+        const frac = Math.max(0, Math.min(1, Number(b.remainingFraction ?? 0)));
+        const remPct = (frac * 100).toFixed(1).replace(/\.0$/, "");
+        const usedPct = ((1 - frac) * 100).toFixed(1).replace(/\.0$/, "");
+        const resetInfo = formatQuotaReset(b.resetTime, frac) || "满额";
+        const th = quotaTheme(frac);
+        const barTrackW = bw - 36;
+        const barFillW = frac <= 0.001 ? 0 : Math.max(6, Math.round(barTrackW * frac));
+
+        svg.push(
+          `<rect x="${bx}" y="${by}" width="${bw}" height="${subH}" rx="10" fill="#080d18" stroke="#1e293b"/>`,
+          `<text x="${bx + 18}" y="${by + 28}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="14" font-weight="bold" fill="#e2e8f0">${escapeXml(b.label)}</text>`,
+          `<text x="${bx + bw - 18}" y="${by + 29}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="20" font-weight="bold" fill="${th.text}">${remPct}%</text>`,
+          `<rect x="${bx + 18}" y="${by + 42}" width="${barTrackW}" height="8" rx="4" fill="#162033"/>`,
+          ...(barFillW > 0
+            ? [`<rect x="${bx + 18}" y="${by + 42}" width="${barFillW}" height="8" rx="4" fill="${th.grad}"/>`]
+            : []),
+          `<text x="${bx + 18}" y="${by + 70}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#64748b">已用 ${usedPct}%</text>`,
+          `<text x="${bx + bw - 18}" y="${by + 70}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12" fill="#94a3b8">${escapeXml(resetInfo)}</text>`
+        );
+      });
+    }
+
+    // Account Footer Telemetry Strip
+    if (hasStats || hasCredits) {
+      const fy = bodyY + bodyH + 12;
+      svg.push(`<line x1="${padX + 20}" y1="${fy}" x2="${padX + contentW - 20}" y2="${fy}" stroke="#1e293b" stroke-width="1"/>`);
+      if (hasStats) {
+        const st = meta.usageStats;
+        const { hitPct } = calcCacheHitPct(st.input || 0, st.cached || 0);
+        const thPart = st.thinking ? ` · 思考 ${formatTokenCount(st.thinking)}` : "";
+        const stLine = `本机统计: ${st.turns || 0} 轮 · 缓存 ${formatTokenCount(st.cached || 0)} (${hitPct.toFixed(1)}%) · 新输入 ${formatTokenCount(st.input || 0)} · 输出 ${formatTokenCount(st.output || 0)}${thPart}`;
+        svg.push(
+          `<text x="${padX + 20}" y="${fy + 25}" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" fill="#94a3b8">${escapeXml(stLine)}</text>`
+        );
+      }
+      if (hasCredits) {
+        const credText = q.availableCredits
+          .map((c) => `${c.creditType || "Credits"}: ${c.creditAmount ?? ""}`)
+          .filter(Boolean)
+          .join(", ");
+        if (credText) {
+          svg.push(
+            `<text x="${padX + contentW - 20}" y="${fy + 25}" text-anchor="end" font-family="'WenQuanYi Zen Hei', sans-serif" font-size="12.5" fill="#38bdf8">积分 ${escapeXml(credText)}</text>`
+          );
+        }
+      }
+    }
+  }
+
+  svg.push(`</svg>`);
+
+  const resvg = new Resvg(svg.join("\n"), {
+    font: {
+      fontFiles: fs.existsSync(WQY_FONT_PATH) ? [WQY_FONT_PATH] : [],
+      loadSystemFonts: true,
+      defaultFontFamily: "WenQuanYi Zen Hei",
+    },
+    fitTo: { mode: "width", value: W },
+  });
+  const outPath = path.join(STATUS_IMG_DIR, `quota_${Date.now()}.png`);
   fs.writeFileSync(outPath, resvg.render().asPng());
   return outPath;
 }
@@ -2581,7 +2930,7 @@ async function sendAccountPanel(chatId, editMsgId = null, { forceRefresh = true 
   }).catch(() => {});
 }
 
-async function sendQuotaPanel(chatId, targetArg = "", editMsgId = null, { forceRefresh = true } = {}) {
+async function sendQuotaPanel(chatId, targetArg = "", editTarget = null, { forceRefresh = true } = {}) {
   const all = listAvailableProfiles();
   const filterName = targetArg.trim().replace(/[^a-zA-Z0-9_-]/g, "");
   const targets = filterName ? all.filter((n) => n === filterName) : all;
@@ -2589,19 +2938,78 @@ async function sendQuotaPanel(chatId, targetArg = "", editMsgId = null, { forceR
     return sendText(chatId, `❌ 未找到账号 [${filterName}]，可用账号: ${all.join(", ")}`);
   }
 
-  let targetMsgId = editMsgId;
-  if (!targetMsgId) {
-    const waitMsg = await sendText(chatId, "⏳ 正在拉取模型剩余额度...");
-    targetMsgId = waitMsg.message_id;
+  const editMsgId = typeof editTarget === "object" && editTarget !== null ? editTarget.messageId : editTarget;
+  const editIsMedia = Boolean(typeof editTarget === "object" && editTarget !== null && editTarget.isMedia);
+  let waitMsgId = null;
+  if (!editMsgId) {
+    const waitMsg = await sendText(chatId, "⏳ 正在拉取模型额度并渲染看板...");
+    waitMsgId = waitMsg.message_id;
   }
 
   const results = await fetchAllProfileQuotas(targets, { forceRefresh });
-
-  const lines = ["📊 模型额度与用量详情", ""];
-  targets.forEach((name, idx) => {
+  const now = Date.now();
+  const entries = targets.map((name, idx) => {
     const meta = cfg.profiles?.[name] || {};
-    const q = results[idx];
-    const isAct = cfg.activeProfile === name;
+    const cdSec = meta.cooldownUntil && meta.cooldownUntil > now ? Math.ceil((meta.cooldownUntil - now) / 1000) : 0;
+    return {
+      name,
+      meta,
+      q: results[idx],
+      isAct: cfg.activeProfile === name,
+      cdSec,
+    };
+  });
+
+  const updTime = new Date().toLocaleTimeString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  const keyboard = {
+    inline_keyboard: [
+      [
+        { text: "🔄 刷新额度", callback_data: makeCb("quota_refresh", filterName) },
+        { text: "👤 账号面板", callback_data: makeCb("quota_acc", {}) },
+      ],
+    ],
+  };
+
+  const captionParts = [`📊 模型额度看板 (${updTime})`];
+  const actEntry = entries.find((e) => e.isAct) || entries[0];
+  if (actEntry?.q?.buckets?.length > 0) {
+    const brief = actEntry.q.buckets
+      .map((b) => `${b.label} ${(b.remainingFraction * 100).toFixed(0)}%`)
+      .join(" · ");
+    captionParts.push(`${actEntry.name}: ${brief}`);
+  }
+  const caption = captionParts.join(" · ");
+
+  try {
+    const imgPath = renderQuotaCardPng({
+      entries,
+      updTime,
+      activeProfile: cfg.activeProfile || "acc1",
+    });
+    if (editIsMedia && editMsgId) {
+      await editPhoto(chatId, editMsgId, imgPath, caption, keyboard);
+      return;
+    }
+    await sendPhoto(chatId, imgPath, caption, keyboard);
+    if (waitMsgId) {
+      await tg("deleteMessage", { chat_id: chatId, message_id: waitMsgId }).catch(() => {});
+    }
+    return;
+  } catch (e) {
+    console.error("quota png render/send err:", e.message);
+  }
+
+  // Text fallback if PNG rendering fails
+  const lines = ["📊 模型额度与用量详情", ""];
+  for (const e of entries) {
+    const { name, meta, q, isAct } = e;
     const emailStr = meta.email || q?.email || "";
     const headerParts = [`${isAct ? "👉" : "•"} ${name}${emailStr ? ` (${emailStr})` : ""}`];
     if (q?.tierName) headerParts.push(q.tierName);
@@ -2622,48 +3030,22 @@ async function sendQuotaPanel(chatId, targetArg = "", editMsgId = null, { forceR
         lines.push(`  • ${b.label}: ${bar} 剩 ${remPct}% (已用 ${usedPct}%)`);
         if (resetInfo) lines.push(`    ⏱️ ${resetInfo}`);
       }
-      if (Array.isArray(q.availableCredits) && q.availableCredits.length > 0) {
-        const credText = q.availableCredits
-          .map((c) => `${c.creditType || "Credits"}: ${c.creditAmount ?? ""}`)
-          .filter(Boolean)
-          .join(", ");
-        if (credText) lines.push(`  💳 可用积分: ${credText}`);
-      }
-    }
-
-    const st = meta.usageStats;
-    if (st && (st.input || st.output || st.cached)) {
-      const { hitPct } = calcCacheHitPct(st.input || 0, st.cached || 0);
-      const thPart = st.thinking ? ` · 思考 ${formatTokenCount(st.thinking)}` : "";
-      lines.push(
-        `  📈 本机统计: ${st.turns || 0} 轮 · 缓存 ${formatTokenCount(st.cached || 0)} (${hitPct.toFixed(1)}%) · 新输入 ${formatTokenCount(st.input || 0)} · 输出 ${formatTokenCount(st.output || 0)}${thPart}`
-      );
     }
     lines.push("");
-  });
-
-  const updTime = new Date().toLocaleTimeString("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
+  }
   lines.push(`🕒 更新时间: ${updTime}`);
 
-  const keyboard = [
-    [
-      { text: "🔄 刷新额度", callback_data: makeCb("quota_refresh", filterName) },
-      { text: "👤 账号面板", callback_data: makeCb("quota_acc", {}) },
-    ],
-  ];
-
-  await tg("editMessageText", {
-    chat_id: chatId,
-    message_id: targetMsgId,
-    text: lines.join("\n").slice(0, 4000),
-    reply_markup: { inline_keyboard: keyboard },
-  }).catch(() => {});
+  const fallbackTarget = waitMsgId || (!editIsMedia ? editMsgId : null);
+  if (fallbackTarget) {
+    await tg("editMessageText", {
+      chat_id: chatId,
+      message_id: fallbackTarget,
+      text: lines.join("\n").slice(0, 4000),
+      reply_markup: keyboard,
+    }).catch(() => {});
+  } else {
+    await sendText(chatId, lines.join("\n").slice(0, 4000), { reply_markup: keyboard });
+  }
 }
 
 async function sendCachePanel(chatId, targetArg = "", editMsgId = null) {
@@ -3400,20 +3782,25 @@ async function handleCallback(cb) {
       await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "正在刷新模型额度..." });
       await sendAccountPanel(chatId, cb.message.message_id, { forceRefresh: true });
     } else if (type === "acc_quota") {
-      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "正在加载详细额度..." });
-      await sendQuotaPanel(chatId, "", cb.message.message_id, { forceRefresh: false });
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "正在渲染额度看板..." });
+      await sendQuotaPanel(chatId, "", null, { forceRefresh: false });
     } else if (type === "quota_refresh") {
-      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "正在刷新额度..." });
-      await sendQuotaPanel(chatId, typeof payload === "string" ? payload : "", cb.message.message_id, { forceRefresh: true });
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "正在刷新额度看板..." });
+      await sendQuotaPanel(
+        chatId,
+        typeof payload === "string" ? payload : "",
+        { messageId: cb.message.message_id, isMedia: Boolean(cb.message?.photo) },
+        { forceRefresh: true }
+      );
     } else if (type === "quota_acc") {
       await tg("answerCallbackQuery", { callback_query_id: cb.id });
-      await sendAccountPanel(chatId, cb.message.message_id, { forceRefresh: false });
+      await sendAccountPanel(chatId, cb.message?.photo ? null : cb.message.message_id, { forceRefresh: false });
     } else if (type === "cache_view") {
       await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "已刷新缓存统计" });
       await sendCachePanel(chatId, typeof payload === "string" ? payload : "", cb.message.message_id);
     } else if (type === "cache_quota") {
-      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "正在加载账号额度..." });
-      await sendQuotaPanel(chatId, "", cb.message.message_id, { forceRefresh: false });
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "正在渲染额度看板..." });
+      await sendQuotaPanel(chatId, "", null, { forceRefresh: false });
     } else if (type === "acc_login") {
       await tg("answerCallbackQuery", { callback_query_id: cb.id, text: `准备登录 ${payload}...` });
       await startInteractiveLogin(chatId, payload);
